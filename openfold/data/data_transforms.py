@@ -22,6 +22,7 @@ import torch
 
 from openfold.config import NUM_RES, NUM_EXTRA_SEQ, NUM_TEMPLATES, NUM_MSA_SEQ
 from openfold.np import residue_constants as rc
+from openfold.utils.feats import atom_gather
 from openfold.utils.rigid_utils import Rotation, Rigid
 from openfold.utils.tensor_utils import (
     tree_map,
@@ -575,8 +576,8 @@ def make_atom14_masks(protein):
     restype_atom37_to_atom14 = []
     restype_atom14_mask = []
 
-    for rt in rc.restypes:
-        atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[rt]]
+    for i, rt in enumerate(rc.restypes):
+        atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[(rt, enumerate(i))]]
         restype_atom14_to_atom37.append(
             [(rc.atom_order[name] if name else 0) for name in atom_names]
         )
@@ -631,7 +632,7 @@ def make_atom14_masks(protein):
         [21, 37], dtype=torch.float32, device=protein["aatype"].device
     )
     for restype, restype_letter in enumerate(rc.restypes):
-        restype_name = rc.restype_1to3[restype_letter]
+        restype_name = rc.restype_1to3[(restype_letter, rc.moltype(restype))]
         atom_names = rc.residue_atoms[restype_name]
         for atom_name in atom_names:
             atom_type = rc.atom_order[atom_name]
@@ -679,7 +680,7 @@ def make_atom14_positions(protein):
 
     # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
     # alternative ground truth coordinates where the naming is swapped
-    restype_3 = [rc.restype_1to3[res] for res in rc.restypes]
+    restype_3 = [rc.restype_1to3[(res, rc.moltype(i))] for i, res in enumerate(rc.restypes)]
     restype_3 += ["UNK"]
 
     # Matrices for renaming ambiguous atoms.
@@ -764,7 +765,7 @@ def atom37_to_frames(protein, eps=1e-8):
     restype_rigidgroup_base_atom_names[:, 3, :] = ["CA", "C", "O"]
 
     for restype, restype_letter in enumerate(rc.restypes):
-        resname = rc.restype_1to3[restype_letter]
+        resname = rc.restype_1to3[(restype_letter, rc.moltype(restype))]
         for chi_idx in range(4):
             if rc.chi_angles_mask[restype][chi_idx]:
                 names = rc.chi_angles_atoms[resname][chi_idx]
@@ -901,19 +902,24 @@ def get_chi_atom_indices():
       positions indices are by default set to 0.
     """
     chi_atom_indices = []
-    for residue_name in rc.restypes:
-        residue_name = rc.restype_1to3[residue_name]
+    for residue_type, residue_name in enumerate(rc.restypes):
+        residue_name = rc.restype_1to3[(residue_name, rc.moltype(residue_type))]
+        if not residue_name in rc.chi_angles_atoms:
+            continue
         residue_chi_angles = rc.chi_angles_atoms[residue_name]
         atom_indices = []
         for chi_angle in residue_chi_angles:
-            atom_indices.append([rc.atom_order[atom] for atom in chi_angle])
-        for _ in range(4 - len(atom_indices)):
+            if chi_angle:
+                atom_indices.append([rc.atom_order[atom] for atom in chi_angle])
+            else:
+                atom_indices.append([0, 0, 0, 0])
+        for _ in range(rc.chi_angles_num - len(atom_indices)):
             atom_indices.append(
                 [0, 0, 0, 0]
             )  # For chi angles not defined on the AA.
         chi_atom_indices.append(atom_indices)
 
-    chi_atom_indices.append([[0, 0, 0, 0]] * 4)  # For UNKNOWN residue.
+    chi_atom_indices.append([[0, 0, 0, 0]] * rc.chi_angles_num)  # For UNKNOWN residue.
 
     return chi_atom_indices
 
@@ -952,40 +958,102 @@ def atom37_to_torsion_angles(
     all_atom_positions = protein[prefix + "all_atom_positions"]
     all_atom_mask = protein[prefix + "all_atom_mask"]
 
-    aatype = torch.clamp(aatype, max=20)
+    aatype = torch.clamp(aatype, max=rc.restype_num)
 
     pad = all_atom_positions.new_zeros(
-        [*all_atom_positions.shape[:-3], 1, 37, 3]
+        [*all_atom_positions.shape[:-3], 1, rc.atom_type_num, 3]
     )
     prev_all_atom_positions = torch.cat(
         [pad, all_atom_positions[..., :-1, :, :]], dim=-3
     )
 
-    pad = all_atom_mask.new_zeros([*all_atom_mask.shape[:-2], 1, 37])
+    pad = all_atom_mask.new_zeros([*all_atom_mask.shape[:-2], 1, rc.atom_type_num])
     prev_all_atom_mask = torch.cat([pad, all_atom_mask[..., :-1, :]], dim=-2)
 
-    pre_omega_atom_pos = torch.cat(
-        [prev_all_atom_positions[..., 1:3, :], all_atom_positions[..., :2, :]],
+    is_na = torch.logical_or(
+        (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+        (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+    )
+
+    n_idx = torch.where(
+        ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
+    )
+    ca_idx = torch.where(
+        ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+    )
+    c_idx = torch.where(
+        ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
+    )
+    o_idx = torch.where(
+        ~is_na, rc.atom_order["O"], rc.atom_order.get("C5\'", rc.atom_order["O"])
+    )
+
+    pre_omega_atom_pos = torch.stack(
+        [
+            atom_gather(prev_all_atom_positions, ca_idx, -2),
+            atom_gather(prev_all_atom_positions, c_idx, -2),
+            atom_gather(all_atom_positions, n_idx, -2),
+            atom_gather(all_atom_positions, ca_idx, -2),
+        ],
         dim=-2,
     )
-    phi_atom_pos = torch.cat(
-        [prev_all_atom_positions[..., 2:3, :], all_atom_positions[..., :3, :]],
+    phi_atom_pos = torch.stack(
+        [
+            atom_gather(prev_all_atom_positions, c_idx, -2),
+            atom_gather(all_atom_positions, n_idx, -2),
+            atom_gather(all_atom_positions, ca_idx, -2),
+            atom_gather(all_atom_positions, c_idx, -2),
+        ],
         dim=-2,
     )
-    psi_atom_pos = torch.cat(
-        [all_atom_positions[..., :3, :], all_atom_positions[..., 4:5, :]],
+    psi_atom_pos = torch.stack(
+        [
+            atom_gather(all_atom_positions, n_idx, -2),
+            atom_gather(all_atom_positions, ca_idx, -2),
+            atom_gather(all_atom_positions, c_idx, -2),
+            atom_gather(all_atom_positions, o_idx, -2),
+        ],
         dim=-2,
     )
 
     pre_omega_mask = torch.prod(
-        prev_all_atom_mask[..., 1:3], dim=-1
-    ) * torch.prod(all_atom_mask[..., :2], dim=-1)
-    phi_mask = prev_all_atom_mask[..., 2] * torch.prod(
-        all_atom_mask[..., :3], dim=-1, dtype=all_atom_mask.dtype
+        torch.stack(
+            [
+                atom_gather(prev_all_atom_mask, ca_idx, -1),
+                atom_gather(prev_all_atom_mask, c_idx, -1),
+            ],
+            dim=-1
+        ), dim=-1
+    ) * torch.prod(
+        torch.stack(
+            [
+                atom_gather(all_atom_mask, n_idx, -1),
+                atom_gather(all_atom_mask, ca_idx, -1),
+            ],
+            dim=-1
+        ), dim=-1
+    )
+    phi_mask = atom_gather(prev_all_atom_mask, c_idx, -1) * torch.prod(
+        torch.stack(
+            [
+                atom_gather(all_atom_mask, n_idx, -1),
+                atom_gather(all_atom_mask, ca_idx, -1),
+                atom_gather(all_atom_mask, c_idx, -1),
+            ],
+            dim=-1
+        ), dim=-1
     )
     psi_mask = (
-        torch.prod(all_atom_mask[..., :3], dim=-1, dtype=all_atom_mask.dtype)
-        * all_atom_mask[..., 4]
+        torch.prod(
+            torch.stack(
+                [
+                    atom_gather(all_atom_mask, n_idx, -1),
+                    atom_gather(all_atom_mask, ca_idx, -1),
+                    atom_gather(all_atom_mask, c_idx, -1),
+                ],
+                dim=-1
+            ), dim=-1
+        ) * atom_gather(all_atom_mask, o_idx, -1)
     )
 
     chi_atom_indices = torch.as_tensor(
@@ -998,7 +1066,7 @@ def atom37_to_torsion_angles(
     )
 
     chi_angles_mask = list(rc.chi_angles_mask)
-    chi_angles_mask.append([0.0, 0.0, 0.0, 0.0])
+    chi_angles_mask.append([0.0] * rc.chi_angles_num)
     chi_angles_mask = all_atom_mask.new_tensor(chi_angles_mask)
 
     chis_mask = chi_angles_mask[aatype, :]
@@ -1061,7 +1129,7 @@ def atom37_to_torsion_angles(
     torsion_angles_sin_cos = torsion_angles_sin_cos / denom
 
     torsion_angles_sin_cos = torsion_angles_sin_cos * all_atom_mask.new_tensor(
-        [1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0],
+        [1.0, 1.0, -1.0] + [1.0] * rc.chi_angles_num,
     )[((None,) * len(torsion_angles_sin_cos.shape[:-2])) + (slice(None), None)]
 
     chi_is_ambiguous = torsion_angles_sin_cos.new_tensor(

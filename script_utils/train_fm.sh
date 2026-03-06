@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+
+
+CWD=`realpath -s $0`
+CWD=`dirname ${CWD}`
+
+cd ${CWD}
+
+help() {
+  echo "usage: `basename $0` [-h] -t {ucond,motif_idx,motif_uidx} -- [train_opt ...]"
+  echo "positional arguments:"
+  echo "    train_opt  train option."
+  echo "               see `configs` for further help."
+  echo "options:"
+  echo "    -h, --help show this help message and exit"
+  echo "    -t TRAIN_MODE, --train_mode TRAIN_MODE {ucond,motif_idx,motif_uidx}"
+  echo "               type of train mode. (default: ucond)"
+  exit $1
+}
+
+train_type="ucond"
+
+ARGS=$(getopt -o "t:h" -l "train_mode:,help" -- "$@") || help 1
+eval "set -- ${ARGS}"
+while true; do
+  case "$1" in
+    (-t | --train_mode) train_type="$2"; shift 2;;
+    (-h | --help) help 0 ;;
+    (--) shift 1; break;;
+    (*) help 1;
+  esac
+done
+
+if [ x"${train_type}" == x"ucond" ]; then
+    dataset="pdb/pdb_train_ucond"
+    autoencoder_ckpt_path="AE1_ucond_512.ckpt"
+    nn="local_latents_score_nn_160M"
+elif [ x"${train_type}" == x"motif_idx" ]; then
+    dataset="pdb/pdb_train_motif_aa"
+    autoencoder_ckpt_path="AE3_motif.ckpt"
+    nn="local_latents_score_nn_160M_motif_idx_aa"
+elif [ x"${train_type}" == x"motif_uidx" ]; then
+    dataset="pdb/pdb_train_motif_aa"
+    autoencoder_ckpt_path="AE3_motif.ckpt"
+    nn="local_latents_score_nn_160M_motif_uidx"
+else
+    help 1;
+fi
+
+pushd ..
+
+sequence_max_length=${sequence_max_length:-512}
+pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
+
+PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
+    run_name_="${pretrain_ckpt}_release_diffusion_${sequence_max_length}" \
+    hardware.ngpus_per_node_=auto \
+    dataset=${dataset} \
+    dataset.datamodule.batch_size=1 \
+    dataset.datamodule.dataselector.max_length=${sequence_max_length} \
+    dataset.datamodule.datasplitter.split_type=random \
+    nn=${nn} \
+    autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
+    $*
+
+##################################
+#    dataset.datamodule.sampling_mode=random \
+#    dataset.datamodule.datasplitter.split_type=random \
+##################################
+popd

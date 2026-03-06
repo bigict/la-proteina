@@ -11,6 +11,7 @@ from loguru import logger
 from sklearn.decomposition import PCA
 from torch import Tensor
 
+from openfold.np import residue_constants as rc
 from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
@@ -454,11 +455,11 @@ class AutoEncoder(L.LightningModule):
             target_aa * mask
         )  # [b, n] gets rid of -1 for padding (issue with cross entropy loss below)
 
-        assert logits_pred.shape[-1] == 20, "Wrong number of logits"
+        assert logits_pred.shape[-1] == rc.restype_num, "Wrong number of logits"
 
         # Compute cross entropy
         b, n = mask.shape[0], mask.shape[1]
-        logits_pred_flat = logits_pred.view(b * n, 20)  # [b * n, 20]
+        logits_pred_flat = logits_pred.view(b * n, rc.restype_num)  # [b * n, 20]
         target_aa_flat = target_aa.view(b * n)  # [b * n]
         seq_loss_flat = torch.nn.functional.cross_entropy(
             input=logits_pred_flat,

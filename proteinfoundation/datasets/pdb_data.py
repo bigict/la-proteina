@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data
 from tqdm import tqdm
 
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import resname_to_idx
 from proteinfoundation.datasets.base_data import BaseLightningDataModule
 from proteinfoundation.utils.cluster_utils import (
@@ -22,8 +23,114 @@ from proteinfoundation.utils.cluster_utils import (
 from proteinfoundation.utils.constants import PDB_TO_OPENFOLD_INDEX_TENSOR
 
 from graphein.ml.datasets import PDBManager
-from graphein.protein.tensor.io import protein_to_pyg
+from graphein.protein import graphs, tensor
 from graphein.protein.utils import download_pdb_multiprocessing
+
+
+def protein_to_pyg(
+    path: str,
+    chain_selection: str = "all",
+    deprotonate: bool = True,
+    keep_insertions: bool = True,
+    keep_hets: List[str] = [],
+    model_index: int = 1,
+    atom_types: List[str] = rc.atom_types,
+    remove_nonstandard: bool = True,
+    store_het: bool = False,
+    store_bfactor: bool = False,
+    fill_value_coords: float = 1e-5,
+) -> Data:
+    path = pathlib.Path(path)
+    # Get ID
+    pid = (
+         path.stem
+         + "_"
+         + "".join(chain_selection)
+         if chain_selection != "all"
+         else path.stem
+    )
+    df = graphs.read_pdb_to_dataframe(path=path, model_index=model_index)
+    if chain_selection != "all":
+        if isinstance(chain_selection, str):
+            chain_selection = [chain_selection]
+        df = graphs.select_chains(df, chain_selection)
+    if deprotonate:
+        df = graphs.deprotonate_structure(df)
+    if not keep_insertions:
+        df = graphs.remove_insertions(df)
+    # Remove hetatms
+    hets = graphs.filter_hetatms(df, keep_hets=keep_hets)
+
+    if store_het:
+        hetatms = df.loc[df.record_name == "HETATM"]
+        all_hets = list(set(hetatms.residue_name))
+        het_data = collections.defaultdict(dict)
+        for het in all_hets:
+            het_data[het]["coords"] = torch.tensor(
+                hetatms.loc[hetatms.residue_name == het][
+                    ["x_coord", "y_coord", "z_coord"]
+                ].values
+            )
+            het_data[het]["atoms"] = hetatms.loc[hetatms.residue_name == het][
+                "atom_name"
+            ].values
+            het_data[het]["residue_number"] = torch.tensor(
+                hetatms.loc[hetatms.residue_name == het][
+                    "residue_number"
+                ].values
+            )
+            het_data[het]["element_symbol"] = hetatms.loc[
+                hetatms.residue_name == het
+            ]["element_symbol"].values
+        df = df.loc[df.record_name == "ATOM"]
+    if remove_nonstandard:
+        df = df.loc[df.residue_name.isin(rc.restype_1to3.values())]
+    df = pd.concat([df] + hets)
+    df = graphs.sort_dataframe(df)
+
+    df["residue_id"] = (
+        df["chain_id"]
+        + ":"
+        + df["residue_name"]
+        + ":"
+        + df["residue_number"].astype(str)
+    )
+    if keep_insertions:
+        df["residue_id"] = df.residue_id + ":" + df.insertion
+
+    out = Data(
+        coords=tensor.io.protein_df_to_tensor(
+            df,
+            atoms_to_keep=atom_types,
+            fill_value=fill_value_coords,
+        ),
+        residues=tensor.sequence.get_sequence(
+            df,
+            chains=chain_selection,
+            insertions=keep_insertions,
+            list_of_three=True,
+        ),
+        id=pid,
+        residue_id=tensor.sequence.get_residue_id(df),
+        residue_type=tensor.sequence.residue_type_tensor(
+            df,
+            vocabulary=rc.restypes,
+            three_to_one_mapping={k: v[0] for k, v in rc.restype_3to1.items()}
+        ),
+        chains=tensor.io.protein_df_to_chain_tensor(df),
+    )
+
+    if store_het:
+        out.hetatms = [het_data]
+
+    if store_bfactor:
+        # group by residue_id and average b_factor per residue
+        residue_bfactors = df.groupby("residue_id")["b_factor"].mean(
+            numeric_only=True
+        )
+        out.bfactor = torch.from_numpy(residue_bfactors.values)
+
+    return out
 
 
 class PDBDataSelector:
@@ -388,8 +495,10 @@ class PDBDataset(Dataset):
             graph = torch.load(self.data_dir / "processed" / fname, weights_only=False)
 
         # reorder coords to be in OpenFold and not PDB convention
+        """
         graph.coords = graph.coords[:, PDB_TO_OPENFOLD_INDEX_TENSOR, :]
         graph.coord_mask = graph.coord_mask[:, PDB_TO_OPENFOLD_INDEX_TENSOR]
+        """
 
         if self.transform:
             graph = self.transform(graph)

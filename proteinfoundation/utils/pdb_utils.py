@@ -65,13 +65,13 @@ def create_full_prot(
 ):
     assert atom37.ndim == 3
     assert atom37.shape[-1] == 3
-    assert atom37.shape[-2] == 37
+    assert atom37.shape[-2] == residue_constants.atom_type_num
     n = atom37.shape[0]
     residue_index = np.arange(n)
     if chain_index is None:
         chain_index = np.zeros(n)
     if b_factors is None:
-        b_factors = np.zeros([n, 37])
+        b_factors = np.zeros([n, residue_constants.atom_type_num])
     if aatype is None:
         aatype = np.zeros(n, dtype=int)
     return Protein(
@@ -112,6 +112,7 @@ def write_prot_to_pdb(
         save_path = file_path.replace(".pdb", "") + f"_{max_existing_idx+1}.pdb"
     else:
         save_path = file_path
+    return save_path
     with open(save_path, "w") as f:
         if prot_pos.ndim == 4:
             for t, pos37 in enumerate(prot_pos):
@@ -152,7 +153,9 @@ def to_pdb(prot: Protein, model=1, add_end=True) -> str:
       PDB string.
     """
     restypes = residue_constants.restypes + ["X"]
-    res_1to3 = lambda r: residue_constants.restype_1to3.get(restypes[r], "UNK")
+    res_1to3 = lambda r: residue_constants.restype_1to3.get(
+        (restypes[r], residue_constants.moltype(r)), "UNK"
+    )
     atom_types = residue_constants.atom_types
 
     pdb_lines = []

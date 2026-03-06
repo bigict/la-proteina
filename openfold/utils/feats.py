@@ -31,6 +31,10 @@ from openfold.utils.tensor_utils import (
 )
 
 
+def atom_gather(atom_feat, atom_idx, dim):
+    return batched_gather(atom_feat, atom_idx, dim, len(atom_feat.shape[:dim]))
+
+
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
     is_gly = aatype == rc.restype_order["G"]
     ca_idx = rc.atom_order["CA"]

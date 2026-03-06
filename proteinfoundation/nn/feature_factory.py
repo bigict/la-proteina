@@ -12,7 +12,9 @@ from torch.nn import functional as F
 from torch_scatter import scatter_mean
 
 from openfold.data import data_transforms
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import atom_types
+from openfold.utils.feats import atom_gather
 from proteinfoundation.utils.angle_utils import bond_angles, signed_dihedral_angle
 from proteinfoundation.utils.fold_utils import extract_cath_code_by_level
 from torch.nn.utils.rnn import pad_sequence
@@ -604,7 +606,16 @@ class CaCoorsNanometersSeqFeat(Feature):
         if "ca_coors_nm" in batch:
             return batch["ca_coors_nm"]  # [b, n, 3]
         else:
-            return batch["coords_nm"][:, :, 1, :]  # [b, n, 3]
+            aatype = batch["residue_type"]  # [b, n]
+            is_na = torch.logical_or(
+                (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+                (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+            )
+            ca_idx = torch.where(
+                ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+            )
+            # return batch["coords_nm"][:, :, 1, :]  # [b, n, 3]
+            return atom_gather(batch["coords_nm"], ca_idx, -2)
 
 
 class TryCaCoorsNanometersSeqFeat(CaCoorsNanometersSeqFeat):
@@ -669,7 +680,7 @@ class ResidueTypeSeqFeat(Feature):
     """
 
     def __init__(self, **kwargs):
-        super().__init__(dim=20)
+        super().__init__(dim=rc.restype_num)
 
     def forward(self, batch):
         assert (
@@ -678,7 +689,7 @@ class ResidueTypeSeqFeat(Feature):
         rtype = batch["residue_type"]  # [b, n]
         rpadmask = batch["mask_dict"]["residue_type"]  # [b, n] binary
         rtype = rtype * rpadmask  # [b, n], the -1 padding becomes 0
-        rtype_onehot = F.one_hot(rtype, num_classes=20)  # [b, n, 20]
+        rtype_onehot = F.one_hot(rtype, num_classes=rc.restype_num)  # [b, n, 20]
         rtype_onehot = (
             rtype_onehot * rpadmask[..., None]
         )
@@ -707,7 +718,7 @@ class OptionalResidueTypeSeqFeat(ResidueTypeSeqFeat):
                     "use_residue_type_feature disabled or not in batch, returning zeros for OptionalResidueTypeSeqFeat"
                 )
                 self._has_logged = True
-            return torch.zeros(b, n, 20, device=device)
+            return torch.zeros(b, n, rc.restype_num, device=device)
 
 
 class Atom37NanometersCoorsSeqFeat(Feature):
@@ -723,7 +734,7 @@ class Atom37NanometersCoorsSeqFeat(Feature):
     """
 
     def __init__(self, rel=False, **kwargs):
-        super().__init__(dim=int(37 * 4))
+        super().__init__(dim=int(rc.atom_type_num * 4))
         # 37 * 4, 37 * 3 for the coordinates, + 37 for the mask
         self.rel = rel  # whether to get features relative to CA or absolute
 
@@ -744,7 +755,16 @@ class Atom37NanometersCoorsSeqFeat(Feature):
 
         if self.rel:
             # If relative remove CA coordinates
-            ca_coors = coors[:, :, 1, :]  # [b, n, 3]
+            aatype = batch["residue_type"]  # [b, n]
+            is_na = torch.logical_or(
+                (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+                (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+            )
+            ca_idx = torch.where(
+                ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+            )
+            # ca_coors = coors[:, :, 1, :]  # [b, n, 3]
+            ca_coors = atom_gather(coors, ca_idx, -2)
             coors = coors - ca_coors[:, :, None, :]  # [b, n, 37, 3]
             coors = coors * coors_mask[..., None]
 
@@ -787,9 +807,28 @@ class BackboneTorsionAnglesSeqFeat(Feature):
             idx = torch.Tensor([[i + 1 for i in range(n)] for _ in range(b)]).to(
                 device
             )  # [b, n]
-        N = a37[:, :, 0, :]  # [b, n, 3]
-        CA = a37[:, :, 1, :]  # [b, n, 3]
-        C = a37[:, :, 2, :]  # [b, n, 3]
+
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        n_idx = torch.where(
+            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        c_idx = torch.where(
+            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
+        )
+
+        # N = a37[:, :, 0, :]  # [b, n, 3]
+        N = atom_gather(a37, n_idx, -2)
+        # CA = a37[:, :, 1, :]  # [b, n, 3]
+        CA = atom_gather(a37, ca_idx, -2)
+        # C = a37[:, :, 2, :]  # [b, n, 3]
+        C = atom_gather(a37, c_idx, -2)
 
         psi = signed_dihedral_angle(
             N[:, :-1, :], CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :]
@@ -846,9 +885,27 @@ class BackboneBondAnglesSeqFeat(Feature):
             )  # [b, n]
         b = a37.shape[0]
 
-        N = a37[:, :, 0, :]  # [b, n, 3]
-        CA = a37[:, :, 1, :]  # [b, n, 3]
-        C = a37[:, :, 2, :]  # [b, n, 3]
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        n_idx = torch.where(
+            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        c_idx = torch.where(
+            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
+        )
+
+        # N = a37[:, :, 0, :]  # [b, n, 3]
+        N = atom_gather(a37, n_idx, -2)
+        # CA = a37[:, :, 1, :]  # [b, n, 3]
+        CA = atom_gather(a37, ca_idx, -2)
+        # C = a37[:, :, 2, :]  # [b, n, 3]
+        C = atom_gather(a37, c_idx, -2)
         theta_1 = bond_angles(N[:, :, :], CA[:, :, :], C[:, :, :])  # [b, n]
         theta_2 = bond_angles(CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :])  # [b, n-1]
         theta_3 = bond_angles(C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :])  # [b, n-1]
@@ -955,6 +1012,7 @@ class MotifAbsoluteCoordsSeqFeat(Feature):
     def forward(self, batch):
         if "x_motif" in batch and "motif_mask" in batch:
             batch_coors = {
+                "residue_type": batch["residue_type"],
                 "coords_nm": batch["x_motif"],
                 "coord_mask": batch["motif_mask"],
             }
@@ -1000,6 +1058,7 @@ class MotifRelativeCoordsSeqFeat(Feature):
                 device = self.extract_device(batch)
                 return torch.zeros(b, n, self.dim, device=device)
             batch_coors = {
+                "residue_type": batch["residue_type"],
                 "coords_nm": batch["x_motif"],
                 "coord_mask": batch["motif_mask"],
             }
@@ -1019,7 +1078,7 @@ class MotifSequenceSeqFeat(Feature):
     """Computes sequence feature from motif."""
 
     def __init__(self, **kwargs):
-        super().__init__(dim=20)  # 20 for one-hot encoded residues
+        super().__init__(dim=rc.restype_num)  # 20 for one-hot encoded residues
         self._has_logged = False
 
     def forward(self, batch):
@@ -1128,13 +1187,14 @@ class XmotifBulkTipSeqFeat(Feature):
         self.const_coors_abs = Atom37NanometersCoorsSeqFeat(rel=False)
         self.const_seq = ResidueTypeSeqFeat()
 
-        dim = self.const_coors_abs.dim + self.const_seq.dim + 37
+        dim = self.const_coors_abs.dim + self.const_seq.dim + rc.atom_type_num
         self.dim = dim  # fix dim
 
     def forward(self, batch):
         if "x_motif" in batch:
             # Coordinates features
             batch_coors = {
+                "residue_type": batch["residue_type"],
                 "coords_nm": batch["x_motif"],  # [b, n, 37, 3]
                 "coord_mask": batch["motif_mask"],  # [b, n, 37]
             }
@@ -1169,7 +1229,7 @@ class MotifMaskSeqFeat(Feature):
     """Computes motif mask feature."""
 
     def __init__(self, **kwargs):
-        super().__init__(dim=37)  # 37 for atom mask
+        super().__init__(dim=rc.atom_type_num)  # 37 for atom mask
         self._has_logged = False
 
     def forward(self, batch):
@@ -1194,7 +1254,7 @@ class XmotifSeqFeatUnindexed(Feature):
         self.const_coors_abs = Atom37NanometersCoorsSeqFeat(rel=False)
         self.const_seq = ResidueTypeSeqFeat()
         
-        dim = self.const_coors_abs.dim + self.const_seq.dim + 37
+        dim = self.const_coors_abs.dim + self.const_seq.dim + rc.atom_type_num
         self.dim = dim
 
     def forward(self, batch):
@@ -1260,13 +1320,14 @@ class BulkAllAtomXmotifSeqFeat(Feature):
         self.const_sc_angles = OpenfoldSideChainAnglesSeqFeat()
         self.const_torsion_angles = BackboneTorsionAnglesSeqFeat()
         
-        dim = self.const_coors_abs.dim + self.const_coors_rel.dim + self.const_seq.dim + self.const_sc_angles.dim + self.const_torsion_angles.dim + 37
+        dim = self.const_coors_abs.dim + self.const_coors_rel.dim + self.const_seq.dim + self.const_sc_angles.dim + self.const_torsion_angles.dim + rc.atom_type_num
         self.dim = dim
 
     def forward(self, batch):
         if "x_motif" in batch:
             # Coordinates features
             batch_coors = {
+                "residue_type": batch["seq_motif"],  # [b, n]
                 "coords_nm": batch["x_motif"],  # [b, n, 37, 3]
                 "coord_mask": batch["motif_mask"],  # [b, n, 37]
             }
@@ -1301,6 +1362,7 @@ class BulkAllAtomXmotifSeqFeat(Feature):
                 )  # [b, n]
             # Torsion angle features
             batch_torsion_angles = {
+                "residue_type": batch["seq_motif"],  # [b, n]
                 "coords": batch["x_motif"],  # [b, n, 37, 3]
                 "residue_pdb_idx": idx,  # [b, n]
             }
@@ -1406,7 +1468,16 @@ class CaCoorsNanometersPairwiseDistancesPairFeat(Feature):
         if "ca_coors_nm" in batch:
             ca_coors = batch["ca_coors_nm"]
         else:
-            ca_coors = batch["coords_nm"][:, :, 1, :]
+            aatype = batch["residue_type"]  # [b, n]
+            is_na = torch.logical_or(
+                (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+                (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+            )
+            ca_idx = torch.where(
+                ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+            )
+            # ca_coors = batch["coords_nm"][:, :, 1, :]
+            ca_coors = atom_gather(batch["coords_nm"], ca_idx, -2)
         return bin_pairwise_distances(
             x=ca_coors,
             min_dist=self.min_dist,
@@ -1498,19 +1569,37 @@ class RelativeResidueOrientationPairFeat(Feature):
 
     def forward(self, batch):
         aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        n_idx = torch.where(
+            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        cb_idx = torch.where(
+            ~is_na, rc.atom_order["CB"], rc.atom_order.get("O5\'", rc.atom_order["CB"])
+        )
         coords = batch["coords"]  # [b, n, 37, 3]
         atom_mask = batch["coord_mask"]  # [b, n, 37]
-        mask = atom_mask[:, :, 1]  # [b, n]
-        has_cb = atom_mask[:, :, 3]  # [b, n] boolean, indicates if corresponding
+        # mask = atom_mask[:, :, 1]  # [b, n]
+        mask = atom_gather(atom_mask, ca_idx, -1)
+        # has_cb = atom_mask[:, :, 3]  # [b, n] boolean, indicates if corresponding
+        has_cb = atom_gather(atom_mask, cb_idx, -1)
         pair_mask = mask[:, :, None] * mask[:, None, :]  # [b, n, n] boolean
         beta_carbon_pair_mask = (
             has_cb[:, :, None] * has_cb[:, :, None]
         )  # [b, n, n] boolean
         pair_mask = pair_mask * beta_carbon_pair_mask  # [b, n, n]
 
-        N = coords[:, :, 0, :]  # [b, n, 3]
-        CA = coords[:, :, 1, :]  # [b, n, 3]
-        CB = coords[:, :, 3, :]  # [b, n, 3]
+        # N = coords[:, :, 0, :]  # [b, n, 3]
+        N = atom_gather(coords, n_idx, -2)
+        # CA = coords[:, :, 1, :]  # [b, n, 3]
+        CA = atom_gather(coords, ca_idx, -2)
+        # CB = coords[:, :, 3, :]  # [b, n, 3]
+        CB = atom_gather(coords, cb_idx, -2)
 
         N_p1, CA_p1, CB_p1 = map(
             lambda v: v[:, :, None, :], (N, CA, CB)
@@ -1553,16 +1642,39 @@ class BackbonePairDistancesNanometerPairFeat(Feature):
         assert (
             "coords_nm" in batch
         ), "`coords_nm` not in batch, cannot comptue BackbonePairDistancesNanometerPairFeat"
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        n_idx = torch.where(
+            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        c_idx = torch.where(
+            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
+        )
+        cb_idx = torch.where(
+            ~is_na, rc.atom_order["CB"], rc.atom_order.get("O5\'", rc.atom_order["CB"])
+        )
         coords = batch["coords_nm"]
         atom_mask = batch["coord_mask"]  # [b, n, 37]
-        mask = atom_mask[:, :, 1]  # [b, n]
+        # mask = atom_mask[:, :, 1]  # [b, n]
+        mask = atom_gather(atom_mask, ca_idx, -1)
         pair_mask = mask[:, None, :] * mask[:, :, None]  # [b, n, n]
-        has_cb = atom_mask[:, :, 3]  # [b, n] boolean, indicates if corresponding
+        # has_cb = atom_mask[:, :, 3]  # [b, n] boolean, indicates if corresponding
+        has_cb = atom_gather(atom_mask, cb_idx, -1)
 
-        N = coords[:, :, 0, :]  # [b, n, 3]
-        CA = coords[:, :, 1, :]  # [b, n, 3]
-        C = coords[:, :, 2, :]  # [b, n, 3]
-        CB = coords[:, :, 3, :]  # [b, n, 3]
+        # N = coords[:, :, 0, :]  # [b, n, 3]
+        N = atom_gather(coords, n_idx, -2)
+        # CA = coords[:, :, 1, :]  # [b, n, 3]
+        CA = atom_gather(coords, ca_idx, -2)
+        # C = coords[:, :, 2, :]  # [b, n, 3]
+        C = atom_gather(coords, c_idx, -2)
+        # CB = coords[:, :, 3, :]  # [b, n, 3]
+        CB = atom_gather(coords, cb_idx, -2)
 
         CA_i = CA[:, :, None, :]  # [b, n, 1, 3]
         N_j, CA_j, C_j, CB_j = map(
@@ -1609,6 +1721,7 @@ class XmotifPairwiseDistancesPairFeat(Feature):
     def forward(self, batch):
         if "x_motif" in batch:
             batch_bbpd = {
+                "residue_type": batch["residue_type"],  # [b, n]
                 "coords_nm": batch["x_motif"],  # [b, n, 37, 3]
                 "coord_mask": batch["motif_mask"],  # [b, n, 37]
             }

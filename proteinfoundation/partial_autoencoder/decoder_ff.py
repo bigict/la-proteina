@@ -3,6 +3,7 @@ from typing import Dict
 import einops
 import torch
 
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import RESTYPE_ATOM37_MASK
 from proteinfoundation.nn.feature_factory import FeatureFactory
 
@@ -58,11 +59,11 @@ class DecoderFFLocal(torch.nn.Module):
 
         self.logit_linear = torch.nn.Sequential(
             torch.nn.LayerNorm(token_dim),
-            torch.nn.Linear(token_dim, 20, bias=False),
+            torch.nn.Linear(token_dim, rc.restype_num, bias=False),
         )
         self.struct_linear = torch.nn.Sequential(
             torch.nn.LayerNorm(token_dim),
-            torch.nn.Linear(token_dim, int(37 * 3), bias=False),
+            torch.nn.Linear(token_dim, int(rc.atom_type_num * 3), bias=False),
         )
 
     def forward(self, input: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -101,7 +102,7 @@ class DecoderFFLocal(torch.nn.Module):
         # Get coordinates
         coors_flat_nm = self.struct_linear(seqs) * mask[..., None]  # [b, n, 37 * 3]
         coors_a37_nm = einops.rearrange(
-            coors_flat_nm, "b n (a t) -> b n a t", a=37, t=3
+            coors_flat_nm, "b n (a t) -> b n a t", a=rc.atom_type_num, t=3
         )  # [b, n, 37, 3]
         coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
 

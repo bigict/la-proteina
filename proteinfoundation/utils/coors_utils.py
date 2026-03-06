@@ -31,6 +31,7 @@ from scipy.spatial.transform import Rotation as Scipy_Rotation
 from torch import Tensor
 
 from openfold.np.residue_constants import (
+    atom_type_num,
     restype_atom14_mask,
     restype_atom14_rigid_group_positions,
     restype_atom14_to_rigid_group,
@@ -165,7 +166,7 @@ def trans_ang_to_atom37(ca_coors):
         Coordinates in atom37 representation
     """
     original_shape = ca_coors.shape  # [*, N, 3]
-    atom37_shape = list(original_shape[:-1]) + [37, original_shape[-1]]  # [*, N, 37, 3]
+    atom37_shape = list(original_shape[:-1]) + [atom_type_num, original_shape[-1]]  # [*, N, 37, 3]
     ca_coors_atom37 = torch.zeros(
         atom37_shape, dtype=ca_coors.dtype, device=ca_coors.device
     )  # [*, N, 37, 3]

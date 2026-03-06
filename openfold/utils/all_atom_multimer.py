@@ -353,8 +353,8 @@ def atom14_to_atom37(
 #         positions indices are by default set to 0.
 #     """
 #     chi_atom_indices = []
-#     for residue_name in rc.restypes:
-#         residue_name = rc.restype_1to3[residue_name]
+#     for residue_type, residue_name in enumerate(rc.restypes):
+#         residue_name = rc.restype_1to3[(residue_name, rc.moltype(residue_type))]
 #         residue_chi_angles = rc.chi_angles_atoms[residue_name]
 #         atom_indices = []
 #         for chi_angle in residue_chi_angles:

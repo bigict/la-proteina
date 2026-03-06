@@ -121,9 +121,9 @@ def load_data_module(cfg_exp, is_cluster_run):
             cfg_data.datamodule.dataselector.exclude_ids += exclude_ids
         else:
             cfg_data.datamodule.dataselector.exclude_ids = exclude_ids
-    if not is_cluster_run:
-        cfg_data["datamodule"]["batch_size"] = 4
-        log_info("Local run, settign batch size to 4")
+    # if not is_cluster_run:
+    #     cfg_data["datamodule"]["batch_size"] = 4
+    #     log_info("Local run, settign batch size to 4")
     log_info(f"Data config {cfg_data}")
 
     datamodule = hydra.utils.instantiate(cfg_data.datamodule)
@@ -151,7 +151,7 @@ def get_model_n_ckpt_resume(cfg_exp, ckpt_path_store):
     pretrain_ckpt_path = cfg_exp.get("pretrain_ckpt_path", None)
     if last_ckpt_path is None and pretrain_ckpt_path is not None:
         log_info(f"Loading from pre-trained checkpoint path {pretrain_ckpt_path}")
-        ckpt = torch.load(pretrain_ckpt_path, map_location="cpu")
+        ckpt = torch.load(pretrain_ckpt_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["state_dict"], strict=False)
 
     # If not resuming from `last` ckpt training set seed
