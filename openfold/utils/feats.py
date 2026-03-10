@@ -37,8 +37,14 @@ def atom_gather(atom_feat, atom_idx, dim):
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
     is_gly = aatype == rc.restype_order["G"]
+    is_na = torch.logical_or(
+        (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+        (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx),
+    )
     ca_idx = rc.atom_order["CA"]
-    cb_idx = rc.atom_order["CB"]
+    cb_idx = torch.where(
+        ~is_na, rc.atom_order["CB"], rc.atom_order.get("O5\'", rc.atom_order["CB"])
+    )
     pseudo_beta = torch.where(
         is_gly[..., None].expand(*((-1,) * len(is_gly.shape)), 3),
         all_atom_positions[..., ca_idx, :],
