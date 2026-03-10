@@ -11,7 +11,7 @@ help() {
   echo "usage: `basename $0` [-h] -t {ucond,motif_idx,motif_uidx} -- [train_opt ...]"
   echo "positional arguments:"
   echo "    train_opt  train option."
-  echo "               see `configs` for further help."
+  echo "               see configs/training_local_latents.yaml for further help."
   echo "options:"
   echo "    -h, --help show this help message and exit"
   echo "    -t TRAIN_MODE, --train_mode TRAIN_MODE {ucond,motif_idx,motif_uidx}"
@@ -59,7 +59,6 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
     dataset=${dataset} \
     dataset.datamodule.batch_size=1 \
     dataset.datamodule.dataselector.max_length=${sequence_max_length} \
-    dataset.datamodule.datasplitter.split_type=random \
     nn=${nn} \
     autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
     $*
