@@ -976,12 +976,12 @@ class OpenfoldSideChainAnglesSeqFeat(Feature):
         )  # [b, n, 7]
         angles = angles * torsion_angles_mask
         # Keep only sidechain
-        torsion_angles_sin_cos = torsion_angles_sin_cos[..., -4:, :]  # [b, n, 4, 2]
+        torsion_angles_sin_cos = torsion_angles_sin_cos[..., -rc.chi_angles_num:, :]  # [b, n, 4 or 5, 2]
         alt_torsion_angles_sin_cos = alt_torsion_angles_sin_cos[
-            ..., -4:, :
+            ..., -rc.chi_angles_num:, :
         ]  # [b, n, 4, 2]
-        angles = angles[..., -4:]  # [b, n, 4]
-        torsion_angles_mask = torsion_angles_mask[..., -4:]  # [b, n, 4]
+        angles = angles[..., -rc.chi_angles_num:]  # [b, n, 4]
+        torsion_angles_mask = torsion_angles_mask[..., -rc.chi_angles_num:]  # [b, n, 4]
         return (
             torsion_angles_sin_cos.to(dtype=orig_dtype),
             angles.to(dtype=orig_dtype),
