@@ -86,7 +86,7 @@ def protein_to_pyg(
     if remove_nonstandard:
         df = df.loc[df.residue_name.isin(rc.restype_1to3.values())]
     df = pd.concat([df] + hets)
-    df = graphs.sort_dataframe(df)
+    #df = graphs.sort_dataframe(df)
 
     df["residue_id"] = (
         df["chain_id"]
