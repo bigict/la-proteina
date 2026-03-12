@@ -367,7 +367,10 @@ def make_msa_mask(protein):
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_mask):
     """Create pseudo beta features."""
-    is_gly = torch.eq(aatype, rc.restype_order["G"])
+    gly_idx = rc.restype_order.get(
+        ("G", rc.PROT), rc.restype_order.get("G", -1)
+    )
+    is_gly = torch.eq(aatype, gly_idx)
     is_na = torch.logical_or(
         (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
         (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx),
@@ -583,7 +586,9 @@ def make_atom14_masks(protein):
     restype_atom14_mask = []
 
     for i, rt in enumerate(rc.restypes):
-        atom_names = rc.restype_name_to_atom14_names[rc.restype_1to3[(rt, enumerate(i))]]
+        atom_names = rc.restype_name_to_atom14_names[
+            rc.restype_1to3[(rt, rc.moltype(i))]
+        ]
         restype_atom14_to_atom37.append(
             [(rc.atom_order[name] if name else 0) for name in atom_names]
         )
@@ -600,9 +605,9 @@ def make_atom14_masks(protein):
         )
 
     # Add dummy mapping for restype 'UNK'
-    restype_atom14_to_atom37.append([0] * 14)
-    restype_atom37_to_atom14.append([0] * 37)
-    restype_atom14_mask.append([0.0] * 14)
+    restype_atom14_to_atom37.append([0] * rc.atom14_type_num)
+    restype_atom37_to_atom14.append([0] * rc.atom_type_num)
+    restype_atom14_mask.append([0.0] * rc.atom14_type_num)
 
     restype_atom14_to_atom37 = torch.tensor(
         restype_atom14_to_atom37,
@@ -635,7 +640,9 @@ def make_atom14_masks(protein):
 
     # create the corresponding mask
     restype_atom37_mask = torch.zeros(
-        [21, 37], dtype=torch.float32, device=protein["aatype"].device
+        [rc.restype_num + 1, rc.atom_type_num],
+        dtype=torch.float32,
+        device=protein["aatype"].device,
     )
     for restype, restype_letter in enumerate(rc.restypes):
         restype_name = rc.restype_1to3[(restype_letter, rc.moltype(restype))]
@@ -692,7 +699,7 @@ def make_atom14_positions(protein):
     # Matrices for renaming ambiguous atoms.
     all_matrices = {
         res: torch.eye(
-            14,
+            rc.atom14_type_num,
             dtype=protein["all_atom_mask"].dtype,
             device=protein["all_atom_mask"].device,
         )
@@ -700,7 +707,7 @@ def make_atom14_positions(protein):
     }
     for resname, swap in rc.residue_atom_renaming_swaps.items():
         correspondences = torch.arange(
-            14, device=protein["all_atom_mask"].device
+            rc.atom14_type_num, device=protein["all_atom_mask"].device
         )
         for source_atom_swap, target_atom_swap in swap.items():
             source_index = rc.restype_name_to_atom14_names[resname].index(
@@ -711,7 +718,9 @@ def make_atom14_positions(protein):
             )
             correspondences[source_index] = target_index
             correspondences[target_index] = source_index
-            renaming_matrix = protein["all_atom_mask"].new_zeros((14, 14))
+            renaming_matrix = protein["all_atom_mask"].new_zeros(
+                (rc.atom14_type_num, rc.atom14_type_num)
+            )
             for index, correspondence in enumerate(correspondences):
                 renaming_matrix[index, correspondence] = 1.0
         all_matrices[resname] = renaming_matrix
@@ -738,7 +747,9 @@ def make_atom14_positions(protein):
     protein["atom14_alt_gt_exists"] = alternative_gt_mask
 
     # Create an ambiguous atoms mask.  shape: (21, 14).
-    restype_atom14_is_ambiguous = protein["all_atom_mask"].new_zeros((21, 14))
+    restype_atom14_is_ambiguous = protein["all_atom_mask"].new_zeros(
+        (rc.restype_num + 1, rc.atom14_type_num)
+    )
     for resname, swap in rc.residue_atom_renaming_swaps.items():
         for atom_name1, atom_name2 in swap.items():
             restype = rc.restype_order[rc.restype_3to1[resname]]
@@ -765,14 +776,18 @@ def atom37_to_frames(protein, eps=1e-8):
     all_atom_mask = protein["all_atom_mask"]
 
     batch_dims = len(aatype.shape[:-1])
+    restype_num = rc.restype_num + 1
+    rigidgroup_num = rc.restype_rigid_group_num
 
-    restype_rigidgroup_base_atom_names = np.full([21, 8, 3], "", dtype=object)
+    restype_rigidgroup_base_atom_names = np.full(
+        [restype_num, rigidgroup_num, 3], "", dtype=object
+    )
     restype_rigidgroup_base_atom_names[:, 0, :] = ["C", "CA", "N"]
     restype_rigidgroup_base_atom_names[:, 3, :] = ["CA", "C", "O"]
 
     for restype, restype_letter in enumerate(rc.restypes):
         resname = rc.restype_1to3[(restype_letter, rc.moltype(restype))]
-        for chi_idx in range(4):
+        for chi_idx in range(rc.chi_angles_num):
             if rc.chi_angles_mask[restype][chi_idx]:
                 names = rc.chi_angles_atoms[resname][chi_idx]
                 restype_rigidgroup_base_atom_names[
@@ -780,11 +795,11 @@ def atom37_to_frames(protein, eps=1e-8):
                 ] = names[1:]
 
     restype_rigidgroup_mask = all_atom_mask.new_zeros(
-        (*aatype.shape[:-1], 21, 8),
+        (*aatype.shape[:-1], restype_num, rigidgroup_num),
     )
     restype_rigidgroup_mask[..., 0] = 1
     restype_rigidgroup_mask[..., 3] = 1
-    restype_rigidgroup_mask[..., :20, 4:] = all_atom_mask.new_tensor(
+    restype_rigidgroup_mask[..., :rc.restype_num, 4:] = all_atom_mask.new_tensor(
         rc.chi_angles_mask
     )
 
@@ -840,7 +855,7 @@ def atom37_to_frames(protein, eps=1e-8):
     gt_exists = torch.min(gt_atoms_exist, dim=-1)[0] * group_exists
 
     rots = torch.eye(3, dtype=all_atom_mask.dtype, device=aatype.device)
-    rots = torch.tile(rots, (*((1,) * batch_dims), 8, 1, 1))
+    rots = torch.tile(rots, (*((1,) * batch_dims), rigidgroup_num, 1, 1))
     rots[..., 0, 0, 0] = -1
     rots[..., 0, 2, 2] = -1
     rots = Rotation(rot_mats=rots)
@@ -848,14 +863,14 @@ def atom37_to_frames(protein, eps=1e-8):
     gt_frames = gt_frames.compose(Rigid(rots, None))
 
     restype_rigidgroup_is_ambiguous = all_atom_mask.new_zeros(
-        *((1,) * batch_dims), 21, 8
+        *((1,) * batch_dims), restype_num, rigidgroup_num
     )
     restype_rigidgroup_rots = torch.eye(
         3, dtype=all_atom_mask.dtype, device=aatype.device
     )
     restype_rigidgroup_rots = torch.tile(
         restype_rigidgroup_rots,
-        (*((1,) * batch_dims), 21, 8, 1, 1),
+        (*((1,) * batch_dims), restype_num, rigidgroup_num, 1, 1),
     )
 
     for resname, _ in rc.residue_atom_renaming_swaps.items():
@@ -912,7 +927,7 @@ def get_chi_atom_indices():
         residue_name = rc.restype_1to3[(residue_name, rc.moltype(residue_type))]
         if not residue_name in rc.chi_angles_atoms:
             continue
-        residue_chi_angles = rc.chi_angles_atoms[residue_name]
+        residue_chi_angles = rc.chi_angles_atoms[residue_name,[]]
         atom_indices = []
         for chi_angle in residue_chi_angles:
             if chi_angle:

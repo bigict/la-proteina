@@ -36,7 +36,10 @@ def atom_gather(atom_feat, atom_idx, dim):
 
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
-    is_gly = aatype == rc.restype_order["G"]
+    gly_idx = rc.restype_order.get(
+        ("G", rc.PROT), rc.restype_order.get("G", -1)
+    )
+    is_gly = aatype == gly_idx
     is_na = torch.logical_or(
         (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
         (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx),
@@ -178,23 +181,33 @@ def torsion_angles_to_frames(
     aatype: torch.Tensor,
     rrgdf: torch.Tensor,
 ):
-    # [*, N, 8, 4, 4]
+    # [*, N, G, 4, 4]
     default_4x4 = rrgdf[aatype, ...]
+    rigid_group_num = default_4x4.shape[-3]
+    expected_torsions = rigid_group_num - 1
 
-    # [*, N, 8] transformations, i.e.
-    #   One [*, N, 8, 3, 3] rotation matrix and
-    #   One [*, N, 8, 3]    translation matrix
+    if alpha.shape[-2] < expected_torsions:
+        missing = expected_torsions - alpha.shape[-2]
+        pad = alpha.new_zeros((*alpha.shape[:-2], missing, 2))
+        pad[..., 1] = 1
+        alpha = torch.cat([alpha, pad], dim=-2)
+    elif alpha.shape[-2] > expected_torsions:
+        alpha = alpha[..., :expected_torsions, :]
+
+    # [*, N, G] transformations, i.e.
+    #   One [*, N, G, 3, 3] rotation matrix and
+    #   One [*, N, G, 3]    translation matrix
     default_r = r.from_tensor_4x4(default_4x4)
 
-    bb_rot = alpha.new_zeros((*((1,) * len(alpha.shape[:-1])), 2))
-    bb_rot[..., 1] = 1
+    bb_rot = alpha.new_zeros((*alpha.shape[:-2], 1, 2))
+    bb_rot[..., 0, 1] = 1
 
-    # [*, N, 8, 2]
+    # [*, N, G, 2]
     alpha = torch.cat(
-        [bb_rot.expand(*alpha.shape[:-2], -1, -1), alpha], dim=-2
+        [bb_rot, alpha], dim=-2
     )
 
-    # [*, N, 8, 3, 3]
+    # [*, N, G, 3, 3]
     # Produces rotation matrices of the form:
     # [
     #   [1, 0  , 0  ],
@@ -214,24 +227,14 @@ def torsion_angles_to_frames(
 
     all_frames = default_r.compose(all_rots)
 
-    chi2_frame_to_frame = all_frames[..., 5]
-    chi3_frame_to_frame = all_frames[..., 6]
-    chi4_frame_to_frame = all_frames[..., 7]
-
-    chi1_frame_to_bb = all_frames[..., 4]
-    chi2_frame_to_bb = chi1_frame_to_bb.compose(chi2_frame_to_frame)
-    chi3_frame_to_bb = chi2_frame_to_bb.compose(chi3_frame_to_frame)
-    chi4_frame_to_bb = chi3_frame_to_bb.compose(chi4_frame_to_frame)
-
-    all_frames_to_bb = Rigid.cat(
-        [
-            all_frames[..., :5],
-            chi2_frame_to_bb.unsqueeze(-1),
-            chi3_frame_to_bb.unsqueeze(-1),
-            chi4_frame_to_bb.unsqueeze(-1),
-        ],
-        dim=-1,
-    )
+    all_frames_to_bb = all_frames[..., :5]
+    if rigid_group_num > 5:
+        chi_frames_to_bb = []
+        running_frame = all_frames[..., 4]
+        for chi_idx in range(5, rigid_group_num):
+            running_frame = running_frame.compose(all_frames[..., chi_idx])
+            chi_frames_to_bb.append(running_frame.unsqueeze(-1))
+        all_frames_to_bb = Rigid.cat([all_frames_to_bb] + chi_frames_to_bb, dim=-1)
 
     all_frames_to_global = r[..., None].compose(all_frames_to_bb)
 

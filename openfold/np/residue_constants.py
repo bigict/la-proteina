@@ -1624,7 +1624,7 @@ def chi_angle_atom(atom_index: int) -> np.ndarray:
 
     for k, v in chi_angles_atoms.items():
         indices = [atom_types.index(s[atom_index]) for s in v if s]
-        indices.extend([-1] * (4 - len(indices)))
+        indices.extend([-1] * max(0, chi_angles_num - len(indices)))
         chi_angles_index[k] = indices
 
     for i, r in enumerate(restypes):
@@ -1632,7 +1632,7 @@ def chi_angle_atom(atom_index: int) -> np.ndarray:
         one_hot = np.eye(atom_type_num)[chi_angles_index[res3]]
         one_hots.append(one_hot)
 
-    one_hots.append(np.zeros([4, atom_type_num]))  # Add zeros for residue `X`.
+    one_hots.append(np.zeros([chi_angles_num, atom_type_num]))  # Add zeros for residue `X`.
     one_hot = np.stack(one_hots, axis=0)
     one_hot = np.transpose(one_hot, [0, 2, 1])
 
@@ -1643,16 +1643,19 @@ def chi_angle_atom(atom_index: int) -> np.ndarray:
 # chi_atom_2_one_hot = chi_angle_atom(2)
 
 # An array like chi_angles_atoms but using indices rather than names.
-chi_angles_atom_indices = [chi_angles_atoms[restype_1to3[(r, moltype(i))]] for i, r in enumerate(restypes)]
-chi_angles_atom_indices = tree.map_structure(
-    lambda atom_name: atom_order[atom_name], chi_angles_atom_indices
-)
-chi_angles_atom_indices = np.array(
-    [
-        chi_atoms + ([[0, 0, 0, 0]] * (4 - len(chi_atoms)))
-        for chi_atoms in chi_angles_atom_indices
-    ]
-)
+chi_angles_atom_indices = []
+for i, r in enumerate(restypes):
+    resname = restype_1to3[(r, moltype(i))]
+    residue_chi_angles = chi_angles_atoms[resname]
+    atom_indices = []
+    for chi_angle in residue_chi_angles:
+        if chi_angle:
+            atom_indices.append([atom_order[atom_name] for atom_name in chi_angle])
+        else:
+            atom_indices.append([0, 0, 0, 0])
+    atom_indices.extend([[0, 0, 0, 0]] * max(0, chi_angles_num - len(atom_indices)))
+    chi_angles_atom_indices.append(atom_indices)
+chi_angles_atom_indices = np.array(chi_angles_atom_indices)
 
 # Mapping from (res_name, atom_name) pairs to the atom's chi group index
 # and atom index within that group.
@@ -1899,13 +1902,15 @@ def _make_chi_atom_indices():
     residue_chi_angles = chi_angles_atoms[residue_name]
     atom_indices = []
     for chi_angle in residue_chi_angles:
-      atom_indices.append(
-          [atom_order[atom] for atom in chi_angle])
-    for _ in range(4 - len(atom_indices)):
+      if chi_angle:
+        atom_indices.append([atom_order[atom] for atom in chi_angle])
+      else:
+        atom_indices.append([0, 0, 0, 0])
+    for _ in range(max(0, chi_angles_num - len(atom_indices))):
       atom_indices.append([0, 0, 0, 0])  # For chi angles not defined on the AA.
     chi_atom_indices.append(atom_indices)
 
-  chi_atom_indices.append([[0, 0, 0, 0]] * 4)  # For UNKNOWN residue.
+  chi_atom_indices.append([[0, 0, 0, 0]] * chi_angles_num)  # For UNKNOWN residue.
 
   return np.array(chi_atom_indices)
 
@@ -2030,7 +2035,7 @@ def _make_restype_rigidgroup_base_atom37_idx():
   # 4,5,6,7: 'chi1,2,3,4-group'
   for restype, restype_letter in enumerate(restypes):
     resname = restype_1to3[(restype_letter, moltype(restype))]
-    for chi_idx in range(4):
+    for chi_idx in range(chi_angles_num):
       if chi_angles_mask[restype][chi_idx]:
         atom_names = chi_angles_atoms[resname][chi_idx]
         base_atom_names[restype, chi_idx + 4, :] = atom_names[1:]
