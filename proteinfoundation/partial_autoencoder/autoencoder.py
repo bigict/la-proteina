@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from torch import Tensor
 
 from openfold.np import residue_constants as rc
+from openfold.utils.feats import atom_gather
 from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
@@ -169,7 +170,16 @@ class AutoEncoder(L.LightningModule):
 
         mask = batch["mask_dict"]["coords"][..., 0, 0]  # [b, n] boolean
         batch["mask"] = mask
-        ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        #ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        ca_coors_nm = atom_gather(batch["coords_nm"], ca_idx, -2)
         ca_coors_nm = ca_coors_nm * mask[..., None]  # [b, n, 3]
         bs, n = mask.shape[0], mask.shape[1]
 
@@ -321,7 +331,7 @@ class AutoEncoder(L.LightningModule):
             )
             # KL per aa type
             if per_aatype_kl and self.global_step % histogram_every_n == 2000:
-                for i in range(20):
+                for i in range(rc.restype_num):
                     self.log_tensor_statistics(
                         bs=bs,
                         v=(componentwise_kl > 0.1) * 1.0,
@@ -802,7 +812,16 @@ class AutoEncoder(L.LightningModule):
         """
         mask = batch["mask_dict"]["coords"][..., 0, 0]  # [b, n] boolean
         batch["mask"] = mask
-        ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        #ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        ca_coors_nm = atom_gather(batch["coords_nm"], ca_idx, -2)
         ca_coors_nm = ca_coors_nm * mask[..., None]  # [b, n, 3]
 
         output_enc = self.encoder(batch)
