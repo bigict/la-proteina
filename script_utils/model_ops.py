@@ -23,7 +23,7 @@ def modify_ae_model_main(args):
     #     x1_a37coors_nm: rc.atom_type_num * 3 + rc.atom_type_num * 1 = 260
     #     x1_a37coors_nm_rel: rc.atom_type_num * 3 + rc.atom_type_num * 1 = 260
     #     x1_bb_angles: 3 * 21 = 63
-    #     x1_sidechain_angles: 4 * 21 + 4 = 88
+    #     x1_sidechain_angles: rc.chi_angles_num * 21 + rc.chi_angles_num = 88
     #     => 702
     assert a.shape[1] == 468, a.shape
     b = torch.cat(
@@ -38,7 +38,10 @@ def modify_ae_model_main(args):
             torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
             a[:, 280:317],
             torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
-            a[:, 317:]
+            a[:, 317:464],
+            torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 21),
+            a[:, 464:468],
+            torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 1),
         ],
         dim=1
     )

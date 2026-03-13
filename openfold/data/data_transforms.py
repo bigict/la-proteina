@@ -927,7 +927,7 @@ def get_chi_atom_indices():
         residue_name = rc.restype_1to3[(residue_name, rc.moltype(residue_type))]
         if not residue_name in rc.chi_angles_atoms:
             continue
-        residue_chi_angles = rc.chi_angles_atoms[residue_name,[]]
+        residue_chi_angles = rc.chi_angles_atoms[residue_name]
         atom_indices = []
         for chi_angle in residue_chi_angles:
             if chi_angle:

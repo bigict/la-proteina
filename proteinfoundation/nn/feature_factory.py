@@ -928,7 +928,7 @@ class OpenfoldSideChainAnglesSeqFeat(Feature):
     """Computes sequence features from side chain angles."""
 
     def __init__(self, **kwargs):
-        super().__init__(dim=int(4 * 21 + 4))  # 88
+        super().__init__(dim=int(rc.chi_angles_num * 21 + rc.chi_angles_num))  # 88
 
     def forward(self, batch):
         _, angles, torsion_angles_mask = self._get_sidechain_angles(batch)

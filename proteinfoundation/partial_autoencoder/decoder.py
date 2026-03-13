@@ -2,6 +2,7 @@ from typing import Dict
 
 import einops
 import torch
+from torch.nn import functional as F
 
 from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import RESTYPE_ATOM37_MASK
@@ -136,6 +137,7 @@ class DecoderTransformer(torch.nn.Module):
             }
         """
         ca_coors_nm = input["ca_coors_nm"]  # [b, n, 3]
+        aatype = input["residue_type"]  # [b, n] boolean
         mask = input["residue_mask"]  # [b, n] boolean
 
         # Conditioning variables
@@ -170,11 +172,21 @@ class DecoderTransformer(torch.nn.Module):
             coors_flat_nm, "b n (a t) -> b n a t", a=rc.atom_type_num, t=3
         )  # [b, n, 37, 3]
 
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )  # [b, n]
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        ca_mask = F.one_hot(ca_idx, num_classes=rc.atom_type_num)[..., None]  # [b, n, 37, 1]
         if self.abs_coors:
-            coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+            # coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+            coors_a37_nm = coors_a37_nm * (1 - ca_mask) + ca_coors_nm[..., None, :] * ca_mask
         else:
-            coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0
-            coors_a37_nm = coors_a37_nm + ca_coors_nm[:, :, None, :]  # [b, n, 37, 3]
+            # coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0
+            # coors_a37_nm = coors_a37_nm + ca_coors_nm[:, :, None, :]  # [b, n, 37, 3]
+            coors_a37_nm = coors_a37_nm * (1 - ca_mask) + ca_coors_nm[..., None, :]
 
         # Get sequence
         aatype_max = torch.argmax(logits_out, dim=-1)  # [b, n]

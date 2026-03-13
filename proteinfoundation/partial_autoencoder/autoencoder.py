@@ -230,6 +230,7 @@ class AutoEncoder(L.LightningModule):
         input_decoder = {
             "z_latent": output_enc["z_latent"],
             "ca_coors_nm": ca_coors_nm,
+            "residue_type": aatype,
             "residue_mask": mask,
             "mask": mask,
         }
@@ -834,6 +835,7 @@ class AutoEncoder(L.LightningModule):
         input_decoder = {
             "z_latent": output_enc["z_latent"],
             "ca_coors_nm": ca_coors_nm,
+            "residue_type": aatype,
             "residue_mask": mask,
             "mask": mask,
         }
