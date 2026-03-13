@@ -1433,18 +1433,22 @@ restype_1to3 = {
     "V": "VAL",
 }
 restype_1to3 = {(k, PROT): v for k, v in restype_1to3.items()}
-restype_1to3 = restype_1to3 | {
-    ("A", DNA ):  "DA",
-    ("C", DNA ):  "DC",
-    ("G", DNA ):  "DG",
-    ("T", DNA ):  "DT",
-    ("X", DNA ):  "DX",
-    ("A", RNA ):   "A",
-    ("C", RNA ):   "C",
-    ("G", RNA ):   "G",
-    ("U", RNA ):   "U",
-    ("X", RNA ):   "X",
-}
+if DNA in restype_list:
+    restype_1to3 = restype_1to3 | {
+        ("A", DNA ):  "DA",
+        ("C", DNA ):  "DC",
+        ("G", DNA ):  "DG",
+        ("T", DNA ):  "DT",
+        ("X", DNA ):  "DX",
+    }
+if RNA in restype_list:
+    restype_1to3 = restype_1to3 | {
+        ("A", RNA ):   "A",
+        ("C", RNA ):   "C",
+        ("G", RNA ):   "G",
+        ("U", RNA ):   "U",
+        ("X", RNA ):   "X",
+    }
 
 
 # NB: restype_3to1 differs from Bio.PDB.protein_letters_3to1 by being a simple

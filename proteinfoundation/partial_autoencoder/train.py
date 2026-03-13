@@ -43,6 +43,38 @@ def create_dir(ckpt_path_store, parents=True, exist_ok=True):
     Path(ckpt_path_store).mkdir(parents=parents, exist_ok=exist_ok)
 
 
+def apply_trainable_keys(model, trainable_keys):
+    """
+    Freeze/defreeze parameters based on name substrings.
+
+    Args:
+        model: LightningModule whose parameters should be toggled.
+        trainable_keys: Iterable of substrings; params whose names contain any of them stay trainable.
+                       If empty/None, leave everything trainable.
+    """
+    if not trainable_keys:
+        log_info("No trainable_keys provided; all parameters remain trainable.")
+        return
+
+    trainable_keys = list(trainable_keys)
+    n_total = 0
+    n_trainable = 0
+    matched_names = []
+    for name, param in model.named_parameters():
+        n_total += 1
+        keep = any(k in name for k in trainable_keys)
+        param.requires_grad = keep
+        if keep:
+            n_trainable += 1
+            matched_names.append(name)
+
+    log_info(
+        f"Applied trainable_keys={trainable_keys}: {n_trainable}/{n_total} parameters remain trainable."
+    )
+    if not matched_names:
+        log_info("Warning: no parameters matched the provided trainable_keys.")
+
+
 def get_run_dirs(cfg_exp):
     """
     Get root directory for run and directory to store checkpoints.
@@ -158,6 +190,9 @@ def get_model_n_ckpt_resume(cfg_exp, ckpt_path_store):
     if last_ckpt_path is None:
         log_info(f"Seeding everything to seed {cfg_exp.seed}")
         L.seed_everything(cfg_exp.seed)
+
+    if hasattr(cfg_exp.opt, "trainable_keys"):
+        apply_trainable_keys(model, cfg_exp.opt.trainable_keys)
 
     return model, last_ckpt_path
 
