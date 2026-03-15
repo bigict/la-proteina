@@ -1,3 +1,4 @@
+import multiprocessing as mp
 import pathlib
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
@@ -720,10 +721,19 @@ class PDBLightningDataModule(BaseLightningDataModule):
             ]
 
         file_names = []
-        for tuple_ in tqdm(index_pdb_tuples, desc="Processing structures", unit="file"):
-            result = self._load_and_process_pdb(tuple_)
-            if result is not None:
-                file_names.append(result)
+        # for tuple_ in tqdm(index_pdb_tuples, desc="Processing structures", unit="file"):
+        #     result = self._load_and_process_pdb(tuple_)
+        #    if result is not None:
+        #        file_names.append(result)
+        with mp.Pool(processes=self.num_workers) as p:
+            for result in tqdm(
+                p.imap_unordered(self._load_and_process_pdb, index_pdb_tuples, chunksize=128),
+                total=len(index_pdb_tuples),
+                desc="Processing structures",
+                unit="file",
+            ):
+                if result is not None:
+                    file_names.append(result)
         
         logger.info("Completed processing.")
         return file_names
