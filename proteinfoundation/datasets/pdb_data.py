@@ -320,7 +320,7 @@ class PDBDataSelector:
         mask = ~pdb_manager.df["id"].isin(all_exclude_ids)
         pdb_manager.df = pdb_manager.df[mask]
         logger.info(f"{len(pdb_manager.df)} chains remaining")
-        self.df_data = pdb_manager.df
+        self.df_data = pdb_manager.df.reset_index()
         return self.df_data
 
 
@@ -610,9 +610,11 @@ class PDBLightningDataModule(BaseLightningDataModule):
                 )
                 self._download_structure_data(df_data["pdb"].tolist())
                 # process pdb files into seperate chains and save processed objects as .pt files
-                self._process_structure_data(
+                df_idx = self._process_structure_data(
                     df_data["pdb"].tolist(), df_data["chain"].tolist()
                 )
+                logger.info(f"Dataset created with {len(df_idx)} entries failed.")
+                df_data = df_data[~df_data.index.isin(df_idx)]
 
                 # save df_data to disk for later use (in splitting, dataloading etc)
                 logger.info(f"Saving dataset csv to {df_data_name}")
@@ -628,10 +630,13 @@ class PDBLightningDataModule(BaseLightningDataModule):
                 logger.info(f"{df_data_name} does not exist yet, creating dataset now.")
                 df_data = self._load_pdb_folder_data(self.raw_dir)
                 # process pdb files into seperate chains and save processed objects as .pt files
-                self._process_structure_data(
+                df_idx = self._process_structure_data(
                     pdb_codes=df_data["pdb"].tolist(),
                     chains=None,
                 )
+                logger.info(f"Dataset created with {len(df_idx)} entries failed.")
+                df_data = df_data[~df_data.index.isin(df_idx)]
+
                 # save df_data to disk for later use (in splitting, dataloading etc)
                 logger.info(f"Saving dataset csv to {df_data_name}")
                 df_data.to_csv(self.data_dir / df_data_name, index=False)
@@ -726,14 +731,14 @@ class PDBLightningDataModule(BaseLightningDataModule):
         #    if result is not None:
         #        file_names.append(result)
         with mp.Pool(processes=self.num_workers) as p:
-            for result in tqdm(
+            for i, result in tqdm(
                 p.imap_unordered(self._load_and_process_pdb, index_pdb_tuples, chunksize=128),
                 total=len(index_pdb_tuples),
                 desc="Processing structures",
                 unit="file",
             ):
-                if result is not None:
-                    file_names.append(result)
+                if result is None:
+                    file_names.append(i)
         
         logger.info("Completed processing.")
         return file_names
@@ -790,7 +795,7 @@ class PDBLightningDataModule(BaseLightningDataModule):
 
         except Exception as e:
             logger.warning(f"Error processing {pdb} {chains}: {e}")
-            return None
+            return i, None
         fname = f"{pdb}.pt" if chains == "all" else f"{pdb}_{chains}.pt"
 
         graph.id = fname.split(".")[0]
@@ -811,10 +816,10 @@ class PDBLightningDataModule(BaseLightningDataModule):
 
         if self.pre_filter:
             if self.pre_filter(graph) is not True:
-                return None
+                return i, None
 
         torch.save(graph, self.processed_dir / fname)
-        return fname
+        return i, fname
 
     def _download_structure_data(self, pdb_codes) -> None:
         if pdb_codes is not None:
