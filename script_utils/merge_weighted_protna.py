@@ -14,12 +14,16 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import pandas as pd
+
+ID_COLUMN = "id"
+SEQUENCE_COLUMN = "sequence"
 
 
 def read_table(path: Path) -> pd.DataFrame:
@@ -31,7 +35,7 @@ def read_table(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported table format: {path}")
 
 
-def read_fasta(path: Path, id_column: str) -> pd.DataFrame:
+def read_fasta(path: Path, id_column: str, seq_column: str) -> pd.DataFrame:
     records: List[Tuple[str, str]] = []
     cur_id: Optional[str] = None
     cur_seq: List[str] = []
@@ -52,7 +56,7 @@ def read_fasta(path: Path, id_column: str) -> pd.DataFrame:
     if cur_id is not None:
         records.append((cur_id, "".join(cur_seq)))
 
-    return pd.DataFrame(records, columns=[id_column, "sequence"])
+    return pd.DataFrame(records, columns=[id_column, seq_column])
 
 
 def write_fasta(df: pd.DataFrame, out_path: Path, id_column: str, seq_column: str) -> None:
@@ -162,16 +166,35 @@ def build_paths_from_identifier(
     if cluster_exact.exists():
         return df_path, seq_path, cluster_exact
 
-    # Fallback: unique candidate when exact similarity filename does not exist.
-    candidates = sorted(
-        source_pdb_train_dir.glob(f"cluster_seqid_*_{identifier}_test.tsv")
+    available = sorted(
+        p.name
+        for p in source_pdb_train_dir.glob(f"cluster_seqid_*_{identifier}_test.tsv")
     )
-    if len(candidates) == 1:
-        return df_path, seq_path, candidates[0]
-
     raise ValueError(
-        f"Cannot resolve cluster TSV for identifier={identifier!r} with "
-        f"cluster_similarity={cluster_similarity}. Candidates: {[p.name for p in candidates]}"
+        f"Input cluster TSV not found for identifier={identifier!r} and "
+        f"cluster_similarity={cluster_similarity}: {cluster_exact}. "
+        f"Available files: {available[:20]}"
+    )
+
+
+def build_paths_from_simple_stem(
+    source_pdb_train_dir: Path,
+    file_stem: str,
+    cluster_similarity: str,
+) -> Tuple[Path, Path, Path]:
+    df_path = source_pdb_train_dir / f"{file_stem}.csv"
+    seq_path = source_pdb_train_dir / f"seq_{file_stem}.fasta"
+    cluster_path = source_pdb_train_dir / f"cluster_seqid_{cluster_similarity}_{file_stem}_test.tsv"
+    if cluster_path.exists():
+        return df_path, seq_path, cluster_path
+
+    available = sorted(
+        p.name for p in source_pdb_train_dir.glob(f"cluster_seqid_*_{file_stem}_test.tsv")
+    )
+    raise ValueError(
+        f"Input cluster TSV not found for simplified NA stem={file_stem!r} and "
+        f"cluster_similarity={cluster_similarity}: {cluster_path}. "
+        f"Available files: {available[:20]}"
     )
 
 
@@ -287,9 +310,16 @@ def ensure_symlink(link_path: Path, source_path: Path) -> None:
     if link_path.is_symlink():
         if link_path.resolve() == source:
             return
-        raise ValueError(f"{link_path} already points elsewhere: {link_path.resolve()}")
+        link_path.unlink()
+        link_path.symlink_to(source, target_is_directory=source.is_dir())
+        return
     if link_path.exists():
-        raise ValueError(f"{link_path} already exists and is not a symlink.")
+        if link_path.is_dir():
+            shutil.rmtree(link_path)
+        else:
+            link_path.unlink()
+        link_path.symlink_to(source, target_is_directory=source.is_dir())
+        return
     link_path.symlink_to(source, target_is_directory=source.is_dir())
 
 
@@ -307,6 +337,24 @@ def main() -> None:
         default=None,
         help="Optional source override. Default: <data-path>/pdb_train",
     )
+    parser.add_argument(
+        "--na-source-pdb-train-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional NA source override. If set, NA is read from this directory "
+            "instead of --source-pdb-train-dir."
+        ),
+    )
+    parser.add_argument(
+        "--na-simple-file-stem",
+        type=str,
+        default="pdb_train",
+        help=(
+            "File stem for simplified NA naming in --na-source-pdb-train-dir: "
+            "<stem>.csv, seq_<stem>.fasta, cluster_seqid_<sim>_<stem>_test.tsv."
+        ),
+    )
     parser.add_argument("--fraction", type=str, required=True, help="Token f<value>, e.g. 0.85")
     parser.add_argument("--min-length", type=int, required=True, help="Token minl<value>")
     parser.add_argument("--max-length", type=int, required=True, help="Token maxl<value>")
@@ -322,30 +370,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--protein-cluster-similarity",
+        "--protein_cluster_similarity",
         type=str,
         default="0.5",
         help="Protein input cluster similarity token.",
     )
     parser.add_argument(
-        "--na-cluster-similarity",
+        "--na_cluster_similarity",
         type=str,
         default="0.5",
         help="NA input cluster similarity token.",
     )
     parser.add_argument(
-        "--output-cluster-similarity",
+        "--output_cluster_similarity",
         type=str,
         default=None,
         help=(
             "Similarity token used only in output cluster filename. "
-            "Default: na-cluster-similarity."
+            "Default: na_cluster_similarity."
         ),
     )
     parser.add_argument("--protein-weight", type=float, default=1.0)
     parser.add_argument("--na-weight", type=float, default=1.0)
-    parser.add_argument("--id-column", type=str, default="id")
-    parser.add_argument("--sequence-column", type=str, default="sequence")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--removed-na-id-filename", type=str, default="removed_na_dirty_ids.txt")
     parser.add_argument("--pdb-filter-script", type=Path, default=Path("script_utils/pdb_filter.py"))
@@ -355,12 +401,15 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     source_pdb_train = args.source_pdb_train_dir or (args.data_path / "pdb_train")
+    na_source_pdb_train = args.na_source_pdb_train_dir or source_pdb_train
     out_data_path = args.data_path.parent / f"{args.data_path.name}_merge"
     out_pdb_train = out_data_path / "pdb_train"
     out_pdb_train.mkdir(parents=True, exist_ok=True)
 
     if not source_pdb_train.exists():
         raise ValueError(f"Source pdb_train dir not found: {source_pdb_train}")
+    if not na_source_pdb_train.exists():
+        raise ValueError(f"NA source pdb_train dir not found: {na_source_pdb_train}")
 
     identifiers = discover_identifiers(source_pdb_train)
     if not identifiers:
@@ -374,22 +423,10 @@ def main() -> None:
         max_length=args.max_length,
         moltype="protein",
     )
-    na_identifier = args.na_identifier or select_identifier_by_tokens(
-        identifiers=identifiers,
-        role="na",
-        fraction=args.fraction,
-        min_length=args.min_length,
-        max_length=args.max_length,
-        moltype="None",
-    )
     assert_identifier_matches_run_tokens(
         protein_identifier, "protein", args.fraction, args.min_length, args.max_length
     )
-    assert_identifier_matches_run_tokens(
-        na_identifier, "na", args.fraction, args.min_length, args.max_length
-    )
     assert_identifier_moltype(protein_identifier, "protein", "protein")
-    assert_identifier_moltype(na_identifier, "na", "None")
 
     # Input similarities are controlled independently for protein and NA.
     protein_similarity = args.protein_cluster_similarity
@@ -398,11 +435,45 @@ def main() -> None:
     out_similarity = args.output_cluster_similarity or na_similarity
 
     protein_df_path, protein_seq_path, protein_cluster_path = build_paths_from_identifier(
-        source_pdb_train, protein_identifier, protein_similarity
+        source_pdb_train,
+        protein_identifier,
+        protein_similarity,
     )
-    na_df_path, na_seq_path, na_cluster_path = build_paths_from_identifier(
-        source_pdb_train, na_identifier, na_similarity
-    )
+
+    if args.na_source_pdb_train_dir is None:
+        na_identifier = args.na_identifier or select_identifier_by_tokens(
+            identifiers=identifiers,
+            role="na",
+            fraction=args.fraction,
+            min_length=args.min_length,
+            max_length=args.max_length,
+            moltype="None",
+        )
+        assert_identifier_matches_run_tokens(
+            na_identifier, "na", args.fraction, args.min_length, args.max_length
+        )
+        assert_identifier_moltype(na_identifier, "na", "None")
+        na_df_path, na_seq_path, na_cluster_path = build_paths_from_identifier(
+            source_pdb_train,
+            na_identifier,
+            na_similarity,
+        )
+    else:
+        if args.na_identifier:
+            # Advanced override: keep old identifier-style loading in custom NA source.
+            na_identifier = args.na_identifier
+            na_df_path, na_seq_path, na_cluster_path = build_paths_from_identifier(
+                na_source_pdb_train,
+                na_identifier,
+                na_similarity,
+            )
+        else:
+            na_identifier = args.na_simple_file_stem
+            na_df_path, na_seq_path, na_cluster_path = build_paths_from_simple_stem(
+                na_source_pdb_train,
+                na_identifier,
+                na_similarity,
+            )
 
     for p in [
         protein_df_path,
@@ -416,30 +487,30 @@ def main() -> None:
             raise ValueError(f"Input file not found: {p}")
 
     protein_df = read_table(protein_df_path)
-    protein_seq_df = read_fasta(protein_seq_path, args.id_column)
+    protein_seq_df = read_fasta(protein_seq_path, ID_COLUMN, SEQUENCE_COLUMN)
     protein_cluster = read_cluster_tsv(protein_cluster_path)
 
     na_df = read_table(na_df_path)
-    na_seq_df = read_fasta(na_seq_path, args.id_column)
+    na_seq_df = read_fasta(na_seq_path, ID_COLUMN, SEQUENCE_COLUMN)
     na_cluster = read_cluster_tsv(na_cluster_path)
 
-    ensure_column(protein_df, args.id_column, "protein_df")
-    ensure_column(protein_seq_df, args.id_column, "protein_seq_df")
-    ensure_column(protein_seq_df, args.sequence_column, "protein_seq_df")
-    ensure_column(na_df, args.id_column, "na_df")
-    ensure_column(na_seq_df, args.id_column, "na_seq_df")
-    ensure_column(na_seq_df, args.sequence_column, "na_seq_df")
+    ensure_column(protein_df, ID_COLUMN, "protein_df")
+    ensure_column(protein_seq_df, ID_COLUMN, "protein_seq_df")
+    ensure_column(protein_seq_df, SEQUENCE_COLUMN, "protein_seq_df")
+    ensure_column(na_df, ID_COLUMN, "na_df")
+    ensure_column(na_seq_df, ID_COLUMN, "na_seq_df")
+    ensure_column(na_seq_df, SEQUENCE_COLUMN, "na_seq_df")
 
     # mtNone source contains mixed molecule types, so we split by molecule_type.
     protein_df = subset_by_molecule_type(protein_df, {"protein"}, "protein_df")
     na_df = subset_by_molecule_type(na_df, {"na", "dna", "rna"}, "na_df")
 
-    protein_df[args.id_column] = protein_df[args.id_column].astype(str)
-    protein_seq_df[args.id_column] = protein_seq_df[args.id_column].astype(str)
-    na_df[args.id_column] = na_df[args.id_column].astype(str)
-    na_seq_df[args.id_column] = na_seq_df[args.id_column].astype(str)
+    protein_df[ID_COLUMN] = protein_df[ID_COLUMN].astype(str)
+    protein_seq_df[ID_COLUMN] = protein_seq_df[ID_COLUMN].astype(str)
+    na_df[ID_COLUMN] = na_df[ID_COLUMN].astype(str)
+    na_seq_df[ID_COLUMN] = na_seq_df[ID_COLUMN].astype(str)
 
-    removed_na_ids = find_na_homopolymer_ids(na_seq_df, args.id_column, args.sequence_column)
+    removed_na_ids = find_na_homopolymer_ids(na_seq_df, ID_COLUMN, SEQUENCE_COLUMN)
     if removed_na_ids:
         if not args.pdb_filter_script.exists():
             raise ValueError(f"pdb_filter.py not found: {args.pdb_filter_script}")
@@ -462,15 +533,15 @@ def main() -> None:
             cluster_seqid_tsv=na_cluster_path,
         )
         na_df = read_table(f_df)
-        na_seq_df = read_fasta(f_seq, args.id_column)
+        na_seq_df = read_fasta(f_seq, ID_COLUMN, SEQUENCE_COLUMN)
         na_cluster = read_cluster_tsv(f_cluster)
 
         na_df = subset_by_molecule_type(na_df, {"na", "dna", "rna"}, "na_df")
-        na_df[args.id_column] = na_df[args.id_column].astype(str)
-        na_seq_df[args.id_column] = na_seq_df[args.id_column].astype(str)
+        na_df[ID_COLUMN] = na_df[ID_COLUMN].astype(str)
+        na_seq_df[ID_COLUMN] = na_seq_df[ID_COLUMN].astype(str)
 
-    protein_valid_ids = set(protein_df[args.id_column]) & set(protein_seq_df[args.id_column])
-    na_valid_ids = set(na_df[args.id_column]) & set(na_seq_df[args.id_column])
+    protein_valid_ids = set(protein_df[ID_COLUMN]) & set(protein_seq_df[ID_COLUMN])
+    na_valid_ids = set(na_df[ID_COLUMN]) & set(na_seq_df[ID_COLUMN])
     if not protein_valid_ids:
         raise ValueError("No valid Protein IDs left.")
     if not na_valid_ids:
@@ -505,10 +576,45 @@ def main() -> None:
 
     merged_df = pd.concat([protein_df, na_df], ignore_index=True)
     merged_seq_df = pd.concat([protein_seq_df, na_seq_df], ignore_index=True)
-    merged_df = merged_df[merged_df[args.id_column].isin(selected_ids)].reset_index(drop=True)
-    merged_seq_df = merged_seq_df[merged_seq_df[args.id_column].isin(selected_ids)].reset_index(drop=True)
+    merged_df = merged_df[merged_df[ID_COLUMN].isin(selected_ids)].reset_index(drop=True)
+    merged_seq_df = merged_seq_df[merged_seq_df[ID_COLUMN].isin(selected_ids)].reset_index(drop=True)
 
-    ident = args.train_file_identifier or na_identifier
+    if args.train_file_identifier:
+        ident = args.train_file_identifier
+    elif na_identifier.startswith("df_"):
+        ident = na_identifier
+    else:
+        # Keep output naming compatible with the repository's df_..._mtNone_... pattern.
+        ident = protein_identifier.replace("_mtprotein_", "_mtNone_")
+    removed_paths: List[Path] = []
+    # Always clean historical generated outputs so naming stays consistent run-to-run.
+    for pattern in [
+        "df_*.csv",
+        "seq_df_*.fasta",
+        "cluster_seqid_*_test.tsv",
+        "cluster_seqid_*_test.fasta",
+    ]:
+        for path in out_pdb_train.glob(pattern):
+            if path.exists() or path.is_symlink():
+                path.unlink()
+                removed_paths.append(path)
+    # Backward compatibility for custom output identifiers from older runs.
+    for pattern in ["*.csv", "seq_*.fasta"]:
+        for path in out_pdb_train.glob(pattern):
+            if path.exists() and path not in removed_paths:
+                if path.name in {"removed_na_dirty_ids.txt"}:
+                    continue
+                path.unlink()
+                removed_paths.append(path)
+    removed_ids_path = out_pdb_train / args.removed_na_id_filename
+    if removed_ids_path.exists() or removed_ids_path.is_symlink():
+        removed_ids_path.unlink()
+        removed_paths.append(removed_ids_path)
+    tmp_filter_dir = out_pdb_train / "_tmp_na_filter"
+    if tmp_filter_dir.exists():
+        shutil.rmtree(tmp_filter_dir)
+        removed_paths.append(tmp_filter_dir)
+
     sim = out_similarity
     out_df = out_pdb_train / f"{ident}.csv"
     out_seq = out_pdb_train / f"seq_{ident}.fasta"
@@ -517,20 +623,20 @@ def main() -> None:
     out_removed_ids = out_pdb_train / args.removed_na_id_filename
 
     merged_df.to_csv(out_df, index=False)
-    write_fasta(merged_seq_df, out_seq, args.id_column, args.sequence_column)
+    write_fasta(merged_seq_df, out_seq, ID_COLUMN, SEQUENCE_COLUMN)
     write_cluster_tsv(merged_cluster, out_cluster_tsv)
 
     rep_seq_df = merged_seq_df[
-        merged_seq_df[args.id_column].isin(list(merged_cluster.keys()))
-    ].drop_duplicates(subset=[args.id_column], keep="first")
-    rep_ids = set(rep_seq_df[args.id_column].astype(str))
+        merged_seq_df[ID_COLUMN].isin(list(merged_cluster.keys()))
+    ].drop_duplicates(subset=[ID_COLUMN], keep="first")
+    rep_ids = set(rep_seq_df[ID_COLUMN].astype(str))
     expected_rep_ids = set(merged_cluster.keys())
     if rep_ids != expected_rep_ids:
         missing = expected_rep_ids - rep_ids
         raise ValueError(
             f"Missing representative sequences for: {sorted(list(missing))[:10]}"
         )
-    write_fasta(rep_seq_df, out_cluster_fasta, args.id_column, args.sequence_column)
+    write_fasta(rep_seq_df, out_cluster_fasta, ID_COLUMN, SEQUENCE_COLUMN)
 
     with out_removed_ids.open("w", encoding="utf-8") as f:
         for pid in sorted(removed_na_ids):
@@ -542,6 +648,7 @@ def main() -> None:
 
     print("Done.")
     print(f"  source pdb_train: {source_pdb_train}")
+    print(f"  na source pdb_train: {na_source_pdb_train}")
     print(f"  output pdb_train: {out_pdb_train}")
     print(f"  protein identifier: {protein_identifier}")
     print(f"  na identifier: {na_identifier}")
@@ -552,6 +659,7 @@ def main() -> None:
     print(f"  input clusters: protein={len(protein_cluster)}, na={len(na_cluster)}")
     print(f"  target clusters: protein={protein_target}, na={na_target}")
     print(f"  removed NA dirty IDs: {len(removed_na_ids)}")
+    print(f"  overwrite output: True (removed {len(removed_paths)} existing artifacts)")
 
 
 if __name__ == "__main__":
