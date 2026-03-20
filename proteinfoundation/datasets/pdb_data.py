@@ -651,6 +651,13 @@ class PDBLightningDataModule(BaseLightningDataModule):
         Returns:
             pd.DataFrame: DataFrame with 'pdb' column containing filenames
         """
+        def _get_sequence(path):
+            df = graphs.read_pdb_to_dataframe(path=path)
+            residues = tensor.sequence.get_sequence(df, list_of_three=True)
+            return "".join(
+                [rc.restype_3to1.get(res, ("X", rc.PROT))[0] for res in residues]
+            )
+
         # Get all files with the specified format extension
         pdb_files = list(data_dir.glob(f"*.{self.format}"))
         
@@ -658,6 +665,7 @@ class PDBLightningDataModule(BaseLightningDataModule):
         df_data = pd.DataFrame({
             'pdb': [pdb_file.stem for pdb_file in pdb_files],
             'id': [pdb_file.stem for pdb_file in pdb_files],
+            'sequence': [_get_sequence(pdb_file) for pdb_file in pdb_files],
         })
         
         if len(df_data) == 0:
