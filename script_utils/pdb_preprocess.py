@@ -13,6 +13,31 @@ from graphein.protein.graphs import (
 from graphein.protein.utils import save_pdb_df_to_pdb
 
 
+def iter_chain_orders(args, chain_group):
+    if not args.do_chain_permutation:
+        yield tuple(chain_group)
+        return
+
+    permutation_iter = itertools.permutations(tuple(chain_group))
+    sampled_count = 0
+
+    while True:
+        batch = list(itertools.islice(permutation_iter, 100))
+        if not batch:
+            return
+
+        random.shuffle(batch)
+        keep_n = 10 if len(batch) == 100 else len(batch)
+        for chain_order in batch[:keep_n]:
+            yield chain_order
+            sampled_count += 1
+            if (
+                args.topk_chain_permutation is not None
+                and sampled_count >= args.topk_chain_permutation
+            ):
+                return
+
+
 def read_pdb(
     path: Optional[Union[str, pathlib.Path]] = None,
     pdb_code: Optional[str] = None,
@@ -46,7 +71,7 @@ def rearrange_pdb(
     for i, (_, g) in enumerate(chains):
         residue_number_min = g["residue_number"].min()
         residue_number_offset = (
-            residue_number_last + i * pseudo_linker_length
+            residue_number_last + (pseudo_linker_length if i > 0 else 0)
         )
         g["residue_number"] = g["residue_number"].apply(
             lambda x: x - residue_number_min + 1 + residue_number_offset
@@ -71,29 +96,30 @@ def main(args):
     print(f"# items in chain_idx: {len(chain_group_dict)}")
 
     for pdb_file in tqdm(args.pdb_file):
-        df_pdb = read_pdb(path=pdb_file)
-        for i, chain_selection in enumerate(
-            chain_group_dict.get(pdb_file.stem, [df_pdb["chain_id"].unique().tolist()])
-        ):
-            df = select_chains(df_pdb, chain_selection)
+        full_df = read_pdb(path=pdb_file)
+        chain_groups = chain_group_dict.get(
+            pdb_file.stem, [full_df["chain_id"].unique().tolist()]
+        )
 
-            # do chain permutations
-            chain_selection_list = list(
-                itertools.permutations(chain_selection)
-                if args.do_chain_permutation else [chain_selection]
+        for chain_group in chain_groups:
+            selected_df = (
+                select_chains(full_df, chain_group)
+                if chain_group else full_df.copy()
             )
+            if selected_df.empty:
+                continue
 
-            random.shuffle(chain_selection_list)
-
-            for chain_selection in chain_selection_list[:args.topk_chain_permutation]:
+            for chain_selection in iter_chain_orders(args, chain_group):
                 # rearrange chains & residue_number
-                df = rearrange_pdb(
-                    df, chain_selection, pseudo_linker_length=args.pseudo_linker_length
+                rearranged_df = rearrange_pdb(
+                    selected_df.copy(),
+                    chain_selection,
+                    pseudo_linker_length=args.pseudo_linker_length,
                 )
 
                 chain_selection = "".join(chain_selection)
                 save_pdb(
-                    args.output_dir / f"{pdb_file.stem}_{chain_selection}.pdb", df
+                    args.output_dir / f"{pdb_file.stem}_{chain_selection}.pdb", rearranged_df
                 )
 
 
