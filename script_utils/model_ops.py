@@ -73,11 +73,36 @@ def modify_ae_model_add_argument(parser):
   return parser
 
 
+def modify_latent_model_main(args):
+    x = torch.load(args.model_files[0], map_location="cpu", weights_only=False)
+    state_dict = x["state_dict"]
+
+    if args.verbose:
+        print(state_dict.keys())
+
+    a = state_dict["nn.init_repr_factory.linear_out.weight"]
+    assert a.shape[1] == 45, a.shape
+    b = torch.cat([a, torch.randn(a.shape[0], rc.restype_num - 20)], dim=1)
+    print(f"{a.shape} => {b.shape}")
+    state_dict["nn.init_repr_factory.linear_out.weight"] = b
+
+    x["state_dict"] = state_dict
+    torch.save(x, args.model_files[1])
+
+
+def modify_latent_model_add_argument(parser):
+  parser.add_argument('model_files', type=str, nargs=2, help='list of model files')
+  return parser
+
+
 if __name__ == "__main__":
     import argparse
 
     commands = {
         "modify_ae_model": (modify_ae_model_main, modify_ae_model_add_argument),
+        "modify_latent_model": (
+            modify_latent_model_main, modify_latent_model_add_argument
+        ),
     }
 
     parser = argparse.ArgumentParser()
