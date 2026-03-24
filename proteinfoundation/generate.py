@@ -61,6 +61,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
         type=str,
         help="Name of the data path",
     )
+    parser.add_argument("config_overrides", type=str, nargs="*", help="Overrides of the config")
     args = parser.parse_args()
     if args.data_path is not None:
         os.environ["DATA_PATH"] = args.data_path
@@ -78,7 +79,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
             config_name = f"inf_{args.config_number}"
         else:
             config_name = args.config_name
-        cfg = hydra.compose(config_name=config_name)
+        cfg = hydra.compose(config_name=config_name, overrides=args.config_overrides)
         logger.info(f"Inference config {cfg}")
 
     return args, cfg, config_name

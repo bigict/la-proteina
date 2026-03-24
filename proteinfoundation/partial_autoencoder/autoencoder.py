@@ -129,6 +129,7 @@ class AutoEncoder(L.LightningModule):
         z_latent: Float[torch.Tensor, "b n d"],
         ca_coors_nm: Float[torch.Tensor, "b n 3"],
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
     ) -> Dict:
         """
         Runs the decoder and returns a dictionary with all necessary decoding information.
@@ -137,6 +138,7 @@ class AutoEncoder(L.LightningModule):
             "z_latent": z_latent,
             "ca_coors_nm": ca_coors_nm,
             "residue_mask": mask,
+            "residue_type": residue_type,
             "mask": mask,
         }
         output_dec = self.decoder(input_decoder)

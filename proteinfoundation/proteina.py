@@ -6,7 +6,7 @@ from typing import Dict, List, Literal, Tuple, Union
 import lightning as L
 import numpy as np
 import torch
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from torch import Tensor
@@ -551,6 +551,8 @@ class Proteina(L.LightningModule):
         # extra_info is a dict with additional things, including
         # "mask", whose value is boolean of shape [nsamples, n]
 
+        extra_info["residue_type"] = batch["residue_type"]
+
         # Format the generated samples back to proteins
         sample_prots = self.sample_formatting(
             x=gen_samples,
@@ -597,11 +599,11 @@ class Proteina(L.LightningModule):
         data_modes = sorted([dm for dm in self.cfg_exp.product_flowmatcher])
         if data_modes == ["bb_ca"]:
             return self._format_sample_bb_ca(
-                x=x, ret_mode=ret_mode, mask=extra_info["mask"]
+                x=x, ret_mode=ret_mode, mask=extra_info["mask"], residue_type=extra_info["residue_type"]
             )
         elif data_modes == ["bb_ca", "local_latents"]:
             return self._format_sample_local_latents(
-                x=x, ret_mode=ret_mode, mask=extra_info["mask"]
+                x=x, ret_mode=ret_mode, mask=extra_info["mask"], residue_type=extra_info["residue_type"]
             )
         else:
             raise NotImplementedError(f"Format {ret_mode} not implemented")
@@ -611,6 +613,7 @@ class Proteina(L.LightningModule):
         x: Dict[str, torch.Tensor],
         ret_mode: str,
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
     ):
         if ret_mode == "samples":
             return x
@@ -666,6 +669,7 @@ class Proteina(L.LightningModule):
         x: Dict[str, torch.Tensor],
         ret_mode: str,
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
     ):
         """
         Given a batch of b samples consisting on `bb_ca` and `local_latents` this
@@ -693,7 +697,7 @@ class Proteina(L.LightningModule):
             Sample x in the requested format.
         """
         output_decoder = self.autoencoder.decode(
-            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask
+            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask, residue_type=residue_type
         )
 
         if ret_mode == "samples":

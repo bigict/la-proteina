@@ -7,6 +7,7 @@ import torch
 from loguru import logger
 from torch.utils.data import Dataset
 
+from openfold.np import residue_constants as rc
 from proteinfoundation.utils.align_utils import mean_w_mask
 from proteinfoundation.utils.fold_utils import mask_cath_code_by_level
 from proteinfoundation.utils.motif_utils import parse_motif, save_motif_csv
@@ -405,6 +406,7 @@ class GenDataset(Dataset):
     def __getitem__(self, index: int):
         result = {
             "nres": self.nres[index],
+            "residue_type": torch.full((self.nres[index], ), rc.unk_restype_index),
             "nsamples": self.nsamples[index],
         }
 
