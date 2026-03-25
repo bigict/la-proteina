@@ -602,10 +602,10 @@ class AutoEncoder(L.LightningModule):
         if self.global_step % every_n != 0:
             return
 
-        n_components = 4
         vals = (
             v.clone()[mask].cpu().detach().float().numpy()
         )  # [num of unmasked residues, d]
+        n_components = min(4, vals.shape[0], vals.shape[1])
         vals_pca = PCA(n_components=n_components).fit_transform(
             vals
         )  # [num of unmasked residues, n_components]
