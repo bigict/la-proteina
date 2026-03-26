@@ -112,7 +112,6 @@ def write_prot_to_pdb(
         save_path = file_path.replace(".pdb", "") + f"_{max_existing_idx+1}.pdb"
     else:
         save_path = file_path
-    return save_path
     with open(save_path, "w") as f:
         if prot_pos.ndim == 4:
             for t, pos37 in enumerate(prot_pos):
@@ -203,7 +202,7 @@ def to_pdb(prot: Protein, model=1, add_end=True) -> str:
         for atom_name, pos, mask, b_factor in zip(
             atom_types, atom_positions[i], atom_mask[i], b_factors[i]
         ):
-            if mask < 0.5:
+            if len(atom_name) == 0 or mask < 0.5:  # FIX: DX or X
                 continue
 
             record_type = "ATOM"

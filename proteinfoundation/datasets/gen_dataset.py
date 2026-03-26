@@ -406,7 +406,6 @@ class GenDataset(Dataset):
     def __getitem__(self, index: int):
         result = {
             "nres": self.nres[index],
-            "residue_type": torch.full((self.nres[index], ), rc.unk_restype_index),
             "nsamples": self.nsamples[index],
         }
 
@@ -423,7 +422,12 @@ class GenDataset(Dataset):
             )  # [bs, num_res]
             result["seq_motif"] = self.residue_types[index]  # [bs, num_res]
             result["mask"] = self.masks[index].bool()  # [bs, num_res]
+            result["residue_type"] = torch.full(
+                (result["nsamples"], self.nres[index]), rc.unk_restype_index
+            )
             return result
+
+        result["residue_type"] = torch.full((self.nres[index], ), rc.unk_restype_index)
 
         # Fallback: unconditional
         return result
