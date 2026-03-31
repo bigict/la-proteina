@@ -69,6 +69,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
         help="(Optional) Name of directory with config files, if not included uses base inference config.\
             Likely only used when submitting to the cluster with script.",
     )
+    parser.add_argument("config_overrides", type=str, nargs="*", help="Overrides of the config")
     args = parser.parse_args()
 
     # Inference config
@@ -78,6 +79,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
         config_path = "../configs"
     else:
         config_path = f"../configs/{args.config_subdir}"
+    config_path = f"../{config_path}"
 
     with hydra.initialize(config_path, version_base=hydra.__version__):
         # If number provided use it, otherwise name
@@ -85,7 +87,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
             config_name = f"inf_{args.config_number}"
         else:
             config_name = args.config_name
-        cfg = hydra.compose(config_name=config_name)
+        cfg = hydra.compose(config_name=config_name, overrides=args.config_overrides)
         logger.info(f"Inference config {cfg}")
 
     return args, cfg, config_name
@@ -148,11 +150,17 @@ def load_dataloader(cfg):
         config_path = "../configs/dataset/pdb_multimer"
         config_name = "pdb_multimer_train"
     else:
-        raise ValueError(f"Dataset {cfg.dataset} not implemented")
+        config_path = None
+        # raise ValueError(f"Dataset {cfg.dataset} not implemented")
 
-    with hydra.initialize(config_path, version_base=hydra.__version__):
-        cfg_data = hydra.compose(config_name=config_name)
-        cfg_data["datamodule"]["batch_size"] = cfg.bs
+    if config_path:
+        config_path = f"../{config_path}"
+
+        with hydra.initialize(config_path, version_base=hydra.__version__):
+            cfg_data = hydra.compose(config_name=config_name)
+    else:
+        cfg_data = cfg.dataset
+    cfg_data["datamodule"]["batch_size"] = cfg.bs
 
     datamodule = hydra.utils.instantiate(cfg_data.datamodule)
     datamodule.prepare_data()
