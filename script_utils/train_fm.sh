@@ -79,6 +79,8 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
     nn=${nn} \
     autoencoder_ckpt_path=checkpoints_${ae_pretrain_ckpt_path}/${autoencoder_ckpt_path} \
     pretrain_ckpt_path=checkpoints_${nn_pretrain_ckpt_path}/${nn_ckpt_path} \
+    log.log_wandb=true \
+    log.wandb_project=proteina_fm_na \
     $*
 
 ##################################
