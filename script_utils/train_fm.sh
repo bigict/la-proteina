@@ -40,14 +40,17 @@ if [ x"${train_type}" == x"ucond" ]; then
     dataset="pdb/pdb_train_ucond"
     autoencoder_ckpt_path="AE1_ucond_512.ckpt"
     nn="local_latents_score_nn_160M"
+    nn_ckpt_path="LD2_ucond_tri_512.ckpt"
 elif [ x"${train_type}" == x"motif_idx" ]; then
     dataset="pdb/pdb_train_motif_aa"
     autoencoder_ckpt_path="AE3_motif.ckpt"
     nn="local_latents_score_nn_160M_motif_idx_aa"
+    nn_ckpt_path="LD4_motif_idx_aa.ckpt"
 elif [ x"${train_type}" == x"motif_uidx" ]; then
     dataset="pdb/pdb_train_motif_aa"
     autoencoder_ckpt_path="AE3_motif.ckpt"
     nn="local_latents_score_nn_160M_motif_uidx"
+    nn_ckpt_path="LD6_motif_uidx_aa.ckpt"
 else
     help 1;
 fi
@@ -55,21 +58,27 @@ fi
 pushd ..
 
 sequence_max_length=${sequence_max_length:-512}
-pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
+ae_pretrain_ckpt=${ae_pretrain_ckpt:-"laproteina"}
+nn_pretrain_ckpt=${nn_pretrain_ckpt:-"laproteina"}
 
-pretrain_ckpt_path=${pretrain_ckpt}
+ae_pretrain_ckpt_path=${ae_pretrain_ckpt}
 if [ ${add_sequence_max_length_to_pretrain_ckpt} ]; then
-  pretrain_ckpt_path=${pretrain_ckpt}_${sequence_max_length}
+  ae_pretrain_ckpt_path=${ae_pretrain_ckpt}_${sequence_max_length}
+fi
+nn_pretrain_ckpt_path=${nn_pretrain_ckpt}
+if [ ${add_sequence_max_length_to_pretrain_ckpt} ]; then
+  nn_pretrain_ckpt_path=${nn_pretrain_ckpt}_${sequence_max_length}
 fi
 
 PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
-    run_name_="${pretrain_ckpt}_release_diffusion_${sequence_max_length}" \
+    run_name_="${nn_pretrain_ckpt}_release_diffusion_${sequence_max_length}" \
     hardware.ngpus_per_node_=auto \
     dataset=${dataset} \
     dataset.datamodule.batch_size=1 \
     dataset.datamodule.dataselector.max_length=${sequence_max_length} \
     nn=${nn} \
-    autoencoder_ckpt_path=checkpoints_${pretrain_ckpt_path}/${autoencoder_ckpt_path} \
+    autoencoder_ckpt_path=checkpoints_${ae_pretrain_ckpt_path}/${autoencoder_ckpt_path} \
+    pretrain_ckpt_path=checkpoints_${nn_pretrain_ckpt_path}/${nn_ckpt_path} \
     $*
 
 ##################################
