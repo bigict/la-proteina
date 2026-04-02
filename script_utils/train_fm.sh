@@ -74,13 +74,14 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
     run_name_="${nn_pretrain_ckpt}_release_diffusion_${sequence_max_length}" \
     hardware.ngpus_per_node_=auto \
     dataset=${dataset} \
-    dataset.datamodule.batch_size=1 \
+    dataset.datamodule.batch_size=2 \
     dataset.datamodule.dataselector.max_length=${sequence_max_length} \
     nn=${nn} \
     autoencoder_ckpt_path=checkpoints_${ae_pretrain_ckpt_path}/${autoencoder_ckpt_path} \
     pretrain_ckpt_path=checkpoints_${nn_pretrain_ckpt_path}/${nn_ckpt_path} \
     log.log_wandb=true \
     log.wandb_project=proteina_fm_na \
+    +is_cluster_run=true \
     $*
 
 ##################################

@@ -153,9 +153,9 @@ def load_data_module(cfg_exp, is_cluster_run):
             cfg_data.datamodule.dataselector.exclude_ids += exclude_ids
         else:
             cfg_data.datamodule.dataselector.exclude_ids = exclude_ids
-    # if not is_cluster_run:
-    #     cfg_data["datamodule"]["batch_size"] = 4
-    #     log_info("Local run, settign batch size to 4")
+    if not is_cluster_run:
+        cfg_data["datamodule"]["batch_size"] = 4
+        log_info("Local run, settign batch size to 4")
     log_info(f"Data config {cfg_data}")
 
     datamodule = hydra.utils.instantiate(cfg_data.datamodule)
@@ -256,7 +256,9 @@ def store_n_log_configs(cfg_exp, cfg_data, run_name, ckpt_path_store, wandb_logg
 def main(cfg_exp) -> None:
     load_dotenv()
 
-    is_cluster_run = False
+    is_cluster_run = (
+        cfg_exp.is_cluster_run if hasattr(cfg_exp, "is_cluster_run") else False
+    )
     nolog = cfg_exp.get(
         "nolog", False
     )  # To use do `python proteinfoundation/train.py +nolog=true`
@@ -289,7 +291,7 @@ def main(cfg_exp) -> None:
         store_n_log_configs(cfg_exp, cfg_data, run_name, ckpt_path_store, wandb_logger)
 
     # Train
-    plugins = [SLURMEnvironment(auto_requeue=True)] if is_cluster_run else []
+    plugins = [SLURMEnvironment(auto_requeue=True)] if os.environ.get("SLURM_JOB_ID") else []
     show_prog_bar = show_prog_bar or not is_cluster_run
     trainer = L.Trainer(
         max_epochs=cfg_exp.opt.max_epochs,

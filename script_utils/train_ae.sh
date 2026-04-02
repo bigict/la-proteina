@@ -72,6 +72,7 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/partial_autoenco
     opt.accumulate_grad_batches=4 \
     log.log_wandb=true \
     log.wandb_project=proteina_ae_na \
+    +is_cluster_run=true \
     $*
 
 ###############################
