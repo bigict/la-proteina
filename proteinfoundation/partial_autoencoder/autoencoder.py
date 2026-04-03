@@ -269,7 +269,9 @@ class AutoEncoder(L.LightningModule):
             self.compute_kl_penalty(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask,
+                mask=mask * torch.where(
+                    ~is_na, self.cfg_ae.loss.kl.get("prot_w", 1.0), self.cfg_ae.loss.kl.get("na_w", 1.0)
+                ),
                 w=self.cfg_ae.loss.kl.weight * f,
             )
         )
@@ -315,7 +317,9 @@ class AutoEncoder(L.LightningModule):
             componentwise_kl = self._per_component_kl(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask,
+                mask=mask * torch.where(
+                    ~is_na, self.cfg_ae.loss.kl.get("prot_w", 1.0), self.cfg_ae.loss.kl.get("na_w", 1.0)
+                ),
             )  # [b, n, d]
             self.log_tensor_statistics(
                 bs=bs,
@@ -519,7 +523,7 @@ class AutoEncoder(L.LightningModule):
         """
         Computes KL penalty on the latent Gaussian distribution.
         """
-        nres = torch.sum(mask, dim=-1)  # [b]
+        nres = torch.sum(mask > 0, dim=-1)  # [b]
         kl_div = self._per_component_kl(
             mean=mean,
             log_scale=log_scale,
