@@ -460,6 +460,13 @@ def scRMSD(
                 rec_prot_folding = load_pdb(out_folding)
                 rec_coors = torch.Tensor(rec_prot_folding.atom_positions)
                 rec_mask = torch.Tensor(rec_prot_folding.atom_mask).bool()
+                if gen_mask.shape != rec_mask.shape:
+                    # Handle failed predictions
+                    results[mode][model].append(float("inf"))
+                    if motif_residue_indices is not None:
+                        results[f"{mode}_motif"][model].append(float("inf"))
+                    logger.warning(f"Incorrect predict {mode}@{out_folding}")
+                    continue
                 mask = gen_mask * rec_mask
 
                 # Compute normal RMSD (all residues)
