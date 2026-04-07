@@ -66,7 +66,9 @@ class DecoderFFLocal(torch.nn.Module):
             torch.nn.Linear(token_dim, int(rc.atom_type_num * 3), bias=False),
         )
 
-    def forward(self, input: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(
+        self, input: Dict[str, torch.Tensor], apply_residue_type_filter: bool = False
+    ) -> Dict[str, torch.Tensor]:
         """
         Runs the network.
 
@@ -88,6 +90,7 @@ class DecoderFFLocal(torch.nn.Module):
             }
         """
         ca_coors_nm = input["ca_coors_nm"]  # [b, n, 3]
+        aatype = input["residue_type"]  # [b, n] boolean
         mask = input["residue_mask"]  # [b, n] boolean
 
         # Iinitial sequence representation from features
@@ -104,10 +107,36 @@ class DecoderFFLocal(torch.nn.Module):
         coors_a37_nm = einops.rearrange(
             coors_flat_nm, "b n (a t) -> b n a t", a=rc.atom_type_num, t=3
         )  # [b, n, 37, 3]
-        coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        is_na = torch.logical_or(is_dna, is_rna)  # [b, n]
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        ca_mask = F.one_hot(ca_idx, num_classes=rc.atom_type_num)[..., None]  # [b, n, 37, 1]
+        # coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+        coors_a37_nm = coors_a37_nm * (1 - ca_mask) + ca_coors_nm[..., None, :] * ca_mask
 
         # Get sequence
         aatype_max = torch.argmax(logits_out, dim=-1)  # [b, n]
+        if apply_residue_type_filter:
+            logits_mask = torch.zeros(
+                len(rc.restype_list), rc.restype_num, device=logits_out.device
+            )
+            logits_mask[rc.PROT - 1, rc.prot_from_idx: rc.prot_to_idx] = 1.
+            if -1 < rc.dna_from_idx < rc.dna_to_idx:
+                logits_mask[rc.DNA - 1, rc.dna_from_idx: rc.dna_to_idx] = 1.
+            if -1 < rc.rna_from_idx < rc.rna_to_idx:
+                logits_mask[rc.RNA - 1, rc.rna_from_idx: rc.rna_to_idx] = 1.
+            residue_type_idx = torch.where(
+                ~is_na, rc.PROT - 1, torch.where(is_dna, rc.DNA - 1, rc.RNA - 1)
+            )
+            logits_mask = logits_mask[residue_type_idx]
+            aatype_max = torch.argmax(
+                logits_out * logits_mask + torch.min(logits_out) * (1. - logits_mask),
+                dim=-1,
+            )  # [b,, n]
         aatype_max = aatype_max * mask  # [b, n]
 
         # Get atom_mask

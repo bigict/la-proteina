@@ -696,8 +696,11 @@ class Proteina(L.LightningModule):
         Returns:
             Sample x in the requested format.
         """
+        apply_residue_type_filter = False
+        if hasattr(self.inf_cfg, "apply_residue_type_filter"):
+            apply_residue_type_filter = self.inf_cfg.apply_residue_type_filter
         output_decoder = self.autoencoder.decode(
-            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask, residue_type=residue_type
+            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask, residue_type=residue_type, apply_residue_type_filter=apply_residue_type_filter
         )
 
         if ret_mode == "samples":

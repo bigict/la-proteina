@@ -45,6 +45,7 @@ class GenDataset(Dataset):
         nsamples: Optional[int] = 1,
         max_nsamples_per_batch: Optional[int] = 1,
         n_replicas: int = 1,
+        unk_restype_index: int = rc.unk_restype_index
     ):
         """
         Args:
@@ -150,6 +151,8 @@ class GenDataset(Dataset):
         assert (
             len(self.nsamples) % n_replicas == 0
         ), f"Should be evenly splitable over {n_replicas} devices"
+
+        self.unk_restype_index = unk_restype_index
 
         logger.info(
             f"Adding generation dataset to sample {self.nsamples} sequences of length {self.nres}."
@@ -423,11 +426,11 @@ class GenDataset(Dataset):
             result["seq_motif"] = self.residue_types[index]  # [bs, num_res]
             result["mask"] = self.masks[index].bool()  # [bs, num_res]
             result["residue_type"] = torch.full(
-                (result["nsamples"], self.nres[index]), rc.unk_restype_index
+                (result["nsamples"], self.nres[index]), self.unk_restype_index
             )
             return result
 
-        result["residue_type"] = torch.full((self.nres[index], ), rc.unk_restype_index)
+        result["residue_type"] = torch.full((self.nres[index], ), self.unk_restype_index)
 
         # Fallback: unconditional
         return result
