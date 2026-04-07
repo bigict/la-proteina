@@ -388,9 +388,9 @@ class AutoEncoder(L.LightningModule):
         """
 
         def reduce_37(
-            err: Float[torch.Tensor, "b n 37 3"],
+            err: Float[torch.Tensor, f"b n {rc.atom_type_num} 3"],
             mask: Bool[torch.Tensor, "b n"],
-            atom_mask: Bool[torch.Tensor, "b n 37"],
+            atom_mask: Bool[torch.Tensor, f"b n {rc.atom_type_num}"],
             mode: Literal["sum", "mean"] = "sum",
         ) -> Float[torch.Tensor, "b"]:
             nres = mask.sum(dim=-1)  # [b]

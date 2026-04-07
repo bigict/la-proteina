@@ -49,7 +49,7 @@ ang_to_nm = lambda trans: trans / nm_to_ang_scale
 nm_to_ang = lambda trans: trans * nm_to_ang_scale
 
 
-def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps CA.
 
@@ -60,12 +60,12 @@ def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, 1] which
         is ones (indicates CA).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 1] = True
     return mask.bool()
 
 
-def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps [N CA C].
 
@@ -76,14 +76,14 @@ def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, [0, 1, 2]] which
         is ones (indicates [N CA C]).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 0] = True
     mask[:, 1] = True
     mask[:, 2] = True
     return mask.bool()
 
 
-def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps [N CA C O].
 
@@ -94,7 +94,7 @@ def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, [0, 1, 2, 4]] which
         is ones (indicates [N CA C O]).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 0] = True
     mask[:, 1] = True
     mask[:, 2] = True

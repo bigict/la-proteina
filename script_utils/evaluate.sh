@@ -8,7 +8,7 @@ CWD=`dirname ${CWD}`
 cd ${CWD}
 
 help() {
-  echo "usage: `basename $0` [-h] -t {ucond,motif_idx,motif_uidx} -- [eval_opt ...]"
+  echo "usage: `basename $0` [-h] -t {ucond,motif_idx,motif_uidx} -j [JOB_ID] -- [eval_opt ...]"
   echo "positional arguments:"
   echo "    eval_opt  evaluate option."
   echo "               see configs/inference_*.yaml for further help."
@@ -16,16 +16,20 @@ help() {
   echo "    -h, --help show this help message and exit"
   echo "    -t INFERENCE_MODE, --inference_mode INFERENCE_MODE {ucond,motif_idx,motif_uidx}"
   echo "               type of evaluate mode. (default: ucond)"
+  echo "    -j JOB_ID, --job_id JOB_ID"
+  echo "               job id. (default: 0)"
   exit $1
 }
 
 eval_type="ucond"
+job_id=0
 
-ARGS=$(getopt -o "t:h" -l "inference_mode:,help" -- "$@") || help 1
+ARGS=$(getopt -o "t:j:h" -l "inference_mode:,job_id:,help" -- "$@") || help 1
 eval "set -- ${ARGS}"
 while true; do
   case "$1" in
     (-t | --inference_mode) eval_type="$2"; shift 2;;
+    (-j | --job_id) job_id="$2"; shift 2;;
     (-h | --help) help 0 ;;
     (--) shift 1; break;;
     (*) help 1;
@@ -51,6 +55,7 @@ pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
 
 PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/evaluate.py \
     --config_name "inference_${config_name}" \
+    --job_id ${job_id} \
     run_name_=${pretrain_ckpt}_${config_name} \
     ckpt_path=checkpoints_${pretrain_ckpt} \
     autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
