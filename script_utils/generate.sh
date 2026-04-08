@@ -8,7 +8,7 @@ CWD=`dirname ${CWD}`
 cd ${CWD}
 
 help() {
-  echo "usage: `basename $0` [-h] -t {ucond,motif_idx,motif_uidx} -j [JOB_ID] -- [infer_opt ...]"
+  echo "usage: `basename $0` [-c -h] -t {ucond,motif_idx,motif_uidx} -c -j [JOB_ID] -- [infer_opt ...]"
   echo "positional arguments:"
   echo "    infer_opt  inference option."
   echo "               see configs/inference_*.yaml for further help."
@@ -16,6 +16,7 @@ help() {
   echo "    -h, --help show this help message and exit"
   echo "    -t INFERENCE_MODE, --inference_mode INFERENCE_MODE {ucond,motif_idx,motif_uidx}"
   echo "               type of inference mode. (default: ucond)"
+  echo "    -c, --create_config create config if not exist"
   echo "    -j JOB_ID, --job_id JOB_ID"
   echo "               job id. (default: 0)"
   exit $1
@@ -24,12 +25,13 @@ help() {
 infer_type="ucond"
 job_id=0
 
-ARGS=$(getopt -o "t:j:h" -l "inference_mode:,job_id:,help" -- "$@") || help 1
+ARGS=$(getopt -o "t:cj:h" -l "inference_mode:,create_config,job_id:,help" -- "$@") || help 1
 eval "set -- ${ARGS}"
 while true; do
   case "$1" in
     (-t | --inference_mode) infer_type="$2"; shift 2;;
     (-j | --job_id) job_id="$2"; shift 2;;
+    (-c | --create_config) create_config=1; shift 1;;
     (-h | --help) help 0 ;;
     (--) shift 1; break;;
     (*) help 1;
@@ -49,22 +51,24 @@ else
     help 1;
 fi
 
-echo $*
-
 pushd ..
 
 pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
+config_name="inference_${config_name}"
+if [ ${create_config} -eq 1 ]; then
+  pushd configs
+  if [ ! -f ${config_name}_${pretrain_ckpt}.yaml ]; then
+    ln -s ${config_name}.yaml ${config_name}_${pretrain_ckpt}.yaml
+  fi
+  popd
+fi
 
 PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/generate.py \
-    --config_name "inference_${config_name}" \
+    --config_name "${config_name}_${pretrain_ckpt}" \
     --job_id ${job_id} \
     run_name_=${pretrain_ckpt}_${config_name} \
     ckpt_path=checkpoints_${pretrain_ckpt} \
     autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
     $*
 
-##################################
-#    dataset.datamodule.sampling_mode=random \
-#    dataset.datamodule.datasplitter.split_type=random \
-##################################
 popd
