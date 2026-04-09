@@ -195,7 +195,7 @@ class DecoderTransformer(torch.nn.Module):
             logits_mask = torch.zeros(
                 len(rc.restype_list), rc.restype_num, device=logits_out.device
             )
-            logits_mask[rc.PROT - 1, rc.prot_from_idx: rc.prot_to_idx] = 1.
+            logits_mask[rc.PROT - 1, rc.prot_from_idx: rc.prot_to_idx + 1] = 1.
             if -1 < rc.dna_from_idx < rc.dna_to_idx:
                 logits_mask[rc.DNA - 1, rc.dna_from_idx: rc.dna_to_idx] = 1.
             if -1 < rc.rna_from_idx < rc.rna_to_idx:
