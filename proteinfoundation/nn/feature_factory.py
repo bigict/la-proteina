@@ -14,7 +14,7 @@ from torch_scatter import scatter_mean
 from openfold.data import data_transforms
 from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import atom_types
-from openfold.utils.feats import atom_gather
+from openfold.utils.feats import atom_gather, pseudo_residue_type
 from proteinfoundation.utils.angle_utils import bond_angles, signed_dihedral_angle
 from proteinfoundation.utils.fold_utils import extract_cath_code_by_level
 from torch.nn.utils.rnn import pad_sequence
@@ -267,7 +267,7 @@ class FoldEmbeddingSeqFeat(Feature):
         self.embedding_C = torch.nn.Embedding(
             self.num_classes_C + 1, fold_emb_dim
         )  # The last class is left as null embedding
-        self.embedding_fA = torch.nn.Embedding(self.num_classes_A + 1, fold_emb_dim)
+        self.embedding_A = torch.nn.Embedding(self.num_classes_A + 1, fold_emb_dim)
         self.embedding_T = torch.nn.Embedding(self.num_classes_T + 1, fold_emb_dim)
         self.register_buffer("_device_param", torch.tensor(0), persistent=False)
         assert multilabel_mode in ["sample", "average", "transformer"]
@@ -710,6 +710,12 @@ class OptionalResidueTypeSeqFeat(ResidueTypeSeqFeat):
     def forward(self, batch):
         if batch.get("use_residue_type_feature", False):
             return super().forward(batch)
+        elif batch.get("use_residue_type_x", False):
+            aatype = batch["residue_type"]
+            batch["residue_type"] = pseudo_residue_type(batch["residue_type"])
+            x = super().forward(batch)
+            batch["residue_type"] = aatype
+            return x
         else:
             b, n = self.extract_bs_and_n(batch)
             device = self.extract_device(batch)

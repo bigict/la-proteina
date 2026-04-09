@@ -35,6 +35,20 @@ def atom_gather(atom_feat, atom_idx, dim):
     return batched_gather(atom_feat, atom_idx, dim, len(atom_feat.shape[:dim]))
 
 
+def pseudo_residue_type(aatype):
+    x = torch.zeros(len(rc.restype_list), device=aatype.device)
+    x[rc.PROT - 1] = rc.unk_restype_index
+    if -1 < rc.dna_from_idx < rc.dna_to_idx:
+        x[rc.DNA - 1] = rc.dna_to_idx
+    if -1 < rc.rna_from_idx < rc.rna_to_idx:
+        x[rc.RNA - 1] = rc.rna_to_idx
+    is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+    is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+    return torch.where(
+        is_dna, x[rc.DNA - 1], torch.where(is_rna, x[rc.RNA - 1], x[rc.PROT - 1])
+    )
+
+
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
     gly_idx = rc.restype_order.get(
         ("G", rc.PROT), rc.restype_order.get("G", -1)

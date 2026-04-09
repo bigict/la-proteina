@@ -2,6 +2,7 @@ from typing import Dict
 
 import einops
 import torch
+from torch.nn import functional as F
 
 from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import RESTYPE_ATOM37_MASK

@@ -717,7 +717,7 @@ class Proteina(L.LightningModule):
             pdb_strings = []
 
             coors_atom_37 = (
-                nm_to_ang(output_decoder["coors_nm"]).float().detach().cpu().numpy(),
+                nm_to_ang(output_decoder["coors_nm"]).float().detach().cpu().numpy()
             )  # [b, n, 37, 3]
             residue_type = output_decoder["residue_type"]  # [b, n]
             atom_mask = output_decoder["atom_mask"]  # [b, n, 37]

@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 from openfold.data import data_transforms
 from openfold.np import residue_constants
 from openfold.utils import rigid_utils
-from openfold.utils.feats import atom_gather
+from openfold.utils.feats import atom_gather, pseudo_residue_type
 from proteinfoundation.utils.align_utils import mean_w_mask
 from proteinfoundation.utils.constants import SIDECHAIN_TIP_ATOMS
 from proteinfoundation.utils.coors_utils import ang_to_nm, sample_uniform_rotation
@@ -487,6 +487,7 @@ class MotifMaskTransform(T.BaseTransform):
         motif_max_n_seg: int = 4,
         motif_min_n_res: int = 1,
         motif_max_n_res: int = 8,
+        motif_seq_with_x: bool = False,
     ):
         self.atom_selection_mode = atom_selection_mode
         self.residue_selection_mode = residue_selection_mode
@@ -497,6 +498,7 @@ class MotifMaskTransform(T.BaseTransform):
         self.motif_max_n_seg = motif_max_n_seg
         self.motif_min_n_res = motif_min_n_res
         self.motif_max_n_res = motif_max_n_res
+        self.motif_seq_with_x = motif_seq_with_x
 
         # Define backbone atom indices based on atom_types from residue_constants
         self.backbone_atoms = [
@@ -688,6 +690,9 @@ class MotifMaskTransform(T.BaseTransform):
         graph.x_motif = graph.coords_nm * graph.motif_mask[..., None]  # [n, 37, 3]
         graph.seq_motif_mask = motif_mask.sum(dim=-1).bool()  # [n]
         graph.seq_motif = graph.residue_type * graph.seq_motif_mask  # [n]
+        if self.motif_seq_with_x:  # fill each pos_n with pseudo residue type: X
+            x = pseudo_residue_type(graph.residue_type)
+            graph.seq_motif = torch.where(graph.seq_motif_mask, graph.residue_type, x)
         return graph
 
 
