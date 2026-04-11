@@ -711,11 +711,11 @@ class OptionalResidueTypeSeqFeat(ResidueTypeSeqFeat):
         if batch.get("use_residue_type_feature", False):
             return super().forward(batch)
         elif batch.get("use_residue_type_x", False):
-            aatype = batch["residue_type"]
-            batch["residue_type"] = pseudo_residue_type(batch["residue_type"])
-            x = super().forward(batch)
-            batch["residue_type"] = aatype
-            return x
+            data = {
+                "residue_type": pseudo_residue_type(batch["residue_type"]),
+                "mask_dict": {"residue_type": batch["mask_dict"]["residue_type"]}
+            }
+            return super().forward(data)
         else:
             b, n = self.extract_bs_and_n(batch)
             device = self.extract_device(batch)
