@@ -23,6 +23,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         transforms: Optional[List[Callable]] = None,
         pre_transforms: Optional[List[Callable]] = None,
         pre_filters: Optional[List[Callable]] = None,
+        use_residue_type_x: bool = False,
         batch_size: int = 32,
         num_workers: int = 32,
         pin_memory: bool = False,
@@ -61,6 +62,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         self.pre_filter = (
             self._compose_filters(pre_filters) if pre_filters is not None else None
         )
+        self.use_residue_type_x = use_residue_type_x
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
@@ -69,6 +71,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         self.test_ds = None
         self.clusterid_to_seqid_mappings = None  # for cluster sampling
         logger.info(f"restype_list = {json.dumps(rc.restype_list)}")
+        logger.info(f"use_residue_type_x = {self.use_residue_type_x}")
 
     def setup(self, stage: Optional[str] = None):
         if stage == "fit" or stage is None:
@@ -89,6 +92,10 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
             return T.ComposeFilters(list(filters.values()))
         except Exception:
             return T.ComposeFilters(filters)
+
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        batch["use_residue_type_x"] = self.use_residue_type_x
+        return batch
 
     @abstractmethod
     def _get_dataset(self, split: str) -> Dataset:
