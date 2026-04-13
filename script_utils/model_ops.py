@@ -81,8 +81,40 @@ def modify_latent_model_main(args):
         print(state_dict.keys())
 
     a = state_dict["nn.init_repr_factory.linear_out.weight"]
-    assert a.shape[1] == 45, a.shape
-    b = torch.cat([a, torch.randn(a.shape[0], rc.restype_num - 20)], dim=1)
+
+    if args.model_type == "ucond":
+        assert a.shape[1] == 45, a.shape
+        b = torch.cat([a, torch.randn(a.shape[0], rc.restype_num - 20)], dim=1)
+    elif args.model_type == "motif_idx":
+        assert a.shape[1] == 549, a.shape
+        # [3, 8, 3, 8, 3, 20, 494] => [3, 8, 3, 8, 3, 30, 854]
+        # [148, 148, 20, ] => [260, 260, 30, 176, 63, 65]
+        b = torch.cat(
+            [
+                a[:, :45],
+                torch.randn(a.shape[0], rc.restype_num - 20),
+                a[:, 45:156],
+                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+                a[:, 156:193],
+                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+                a[:, 193:304],
+                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+                a[:, 304:341],
+                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+                a[:, 341:361],
+                torch.randn(a.shape[0], rc.restype_num - 20),
+                a[:, 361:445],
+                torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 21),
+                a[:, 445:449],
+                torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 1),
+                a[:, 449:512],
+                a[:, 512:549],
+                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+            ],
+            dim=1
+        )
+        assert b.shape[1] == 909, b.shape
+
     print(f"{a.shape} => {b.shape}")
     state_dict["nn.init_repr_factory.linear_out.weight"] = b
 
@@ -91,7 +123,10 @@ def modify_latent_model_main(args):
 
 
 def modify_latent_model_add_argument(parser):
-  parser.add_argument('model_files', type=str, nargs=2, help='list of model files')
+  parser.add_argument("model_files", type=str, nargs=2, help="list of model files")
+  parser.add_argument(
+      "-t", "--model_type", type=str, choices=["ucond", "motif_idx", "motif_uidx"], default="ucond"
+  )
   return parser
 
 
