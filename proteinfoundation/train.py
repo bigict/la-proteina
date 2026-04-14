@@ -49,6 +49,38 @@ def create_dir(ckpt_path_store, parents=True, exist_ok=True):
 
 
 
+def apply_trainable_keys(model, trainable_keys):
+    """
+    Freeze/defreeze parameters based on name substrings.
+
+    Args:
+        model: LightningModule whose parameters should be toggled.
+        trainable_keys: Iterable of substrings; params whose names contain any of them stay trainable.
+                       If empty/None, leave everything trainable.
+    """
+    if not trainable_keys:
+        log_info("No trainable_keys provided; all parameters remain trainable.")
+        return
+
+    trainable_keys = list(trainable_keys)
+    n_total = 0
+    n_trainable = 0
+    matched_names = []
+    for name, param in model.named_parameters():
+        n_total += 1
+        keep = any(k in name for k in trainable_keys)
+        param.requires_grad = keep
+        if keep:
+            n_trainable += 1
+            matched_names.append(name)
+
+    log_info(
+        f"Applied trainable_keys={trainable_keys}: {n_trainable}/{n_total} parameters remain trainable."
+    )
+    if not matched_names:
+        log_info("Warning: no parameters matched the provided trainable_keys.")
+
+
 def load_cfg_exp(config_name, single_gpu, is_cluster_run):
     """
     Loads experiment config.
@@ -197,6 +229,8 @@ def get_model_n_ckpt_resume(cfg_exp, ckpt_path_store):
             model, cfg_exp.lora.r, cfg_exp.lora.lora_alpha, cfg_exp.lora.lora_dropout
         )
         lora.mark_only_lora_as_trainable(model, bias=cfg_exp.lora.train_bias)
+    elif hasattr(cfg_exp.opt, "trainable_keys"):
+        apply_trainable_keys(model, cfg_exp.opt.trainable_keys)
 
     # If this is the first run for fine-tuning, load pre-trained checkpoint and don't load optimizer states
     pretrain_ckpt_path = cfg_exp.get("pretrain_ckpt_path", None)
