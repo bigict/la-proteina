@@ -17,6 +17,7 @@ from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
 from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 
 COLORS_RT = [
@@ -102,6 +103,9 @@ class AutoEncoder(L.LightningModule):
             amsgrad=True,
             weight_decay=1e-2,
         )
+        if hasattr(self.cfg_ae.opt, "scheduler"):
+            scheduler = get_scheduler(optimizer=optimizer, **self.cfg_ae.opt.scheduler)
+            return [optimizer], [scheduler]
         return optimizer
 
     def on_save_checkpoint(self, checkpoint):

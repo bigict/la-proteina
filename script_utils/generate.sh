@@ -71,4 +71,6 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/generate.py \
     autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
     $*
 
+# +generation.apply_residue_type_filter=true
+
 popd

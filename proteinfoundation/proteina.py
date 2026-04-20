@@ -21,6 +21,7 @@ from proteinfoundation.nn.local_latents_transformer import LocalLatentsTransform
 from proteinfoundation.nn.local_latents_transformer_unindexed import LocalLatentsTransformerMotifUidx
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import nm_to_ang, trans_nm_to_atom37
+from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import (
     create_full_prot,
     to_pdb,
@@ -117,6 +118,9 @@ class Proteina(L.LightningModule):
         optimizer = torch.optim.Adam(
             [p for p in self.parameters() if p.requires_grad], lr=self.cfg_exp.opt.lr
         )
+        if hasattr(self.cfg_exp.opt, "scheduler"):
+            scheduler = get_scheduler(optimizer=optimizer, **self.cfg_exp.opt.scheduler)
+            return [optimizer], [scheduler]
         return optimizer
 
     def on_save_checkpoint(self, checkpoint):
