@@ -55,7 +55,7 @@ sequence_max_length=${sequence_max_length:-512}
 pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
 
 pretrain_ckpt_path=${pretrain_ckpt}
-if [ ${add_sequence_max_length_to_pretrain_ckpt} ]; then
+if [ ${add_sequence_max_length_to_pretrain_ckpt} -ne 0 ]; then
   pretrain_ckpt_path=${pretrain_ckpt}_${sequence_max_length}
 fi
 

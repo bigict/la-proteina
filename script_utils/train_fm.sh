@@ -62,11 +62,11 @@ ae_pretrain_ckpt=${ae_pretrain_ckpt:-"laproteina"}
 nn_pretrain_ckpt=${nn_pretrain_ckpt:-"laproteina"}
 
 ae_pretrain_ckpt_path=${ae_pretrain_ckpt}
-if [ ${add_sequence_max_length_to_pretrain_ckpt} ]; then
+if [ ${add_sequence_max_length_to_pretrain_ckpt} -ne 0 ]; then
   ae_pretrain_ckpt_path=${ae_pretrain_ckpt}_${sequence_max_length}
 fi
 nn_pretrain_ckpt_path=${nn_pretrain_ckpt}
-if [ ${add_sequence_max_length_to_pretrain_ckpt} ]; then
+if [ ${add_sequence_max_length_to_pretrain_ckpt} -ne 0 ]; then
   nn_pretrain_ckpt_path=${nn_pretrain_ckpt}_${sequence_max_length}
 fi
 
