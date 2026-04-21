@@ -14,6 +14,7 @@ import lightning as L
 import torch
 import wandb
 from dotenv import load_dotenv
+from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 from lightning.pytorch.utilities import rank_zero_only
@@ -79,6 +80,9 @@ def initialize_callbacks(cfg_exp):
                 min_opt_steps=cfg_exp.opt.skip_large_grad_updates.min_opt_steps,
             )
         )
+    if hasattr(cfg_exp.opt, "scheduler"):
+        log_info(f"Using Learning Rate Motitor {cfg_exp.opt.scheduler}")
+        callbacks.append(LearningRateMonitor())
 
     callbacks.append(LogEpochTimeCallback())
     callbacks.append(LogSetpTimeCallback())
@@ -151,7 +155,7 @@ def get_model_n_ckpt_resume(cfg_exp, ckpt_path_store):
     pretrain_ckpt_path = cfg_exp.get("pretrain_ckpt_path", None)
     if last_ckpt_path is None and pretrain_ckpt_path is not None:
         log_info(f"Loading from pre-trained checkpoint path {pretrain_ckpt_path}")
-        ckpt = torch.load(pretrain_ckpt_path, map_location="cpu")
+        ckpt = torch.load(pretrain_ckpt_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["state_dict"], strict=False)
 
     # If not resuming from `last` ckpt training set seed
@@ -221,7 +225,9 @@ def store_n_log_configs(cfg_exp, cfg_data, run_name, ckpt_path_store, wandb_logg
 def main(cfg_exp) -> None:
     load_dotenv()
 
-    is_cluster_run = False
+    is_cluster_run = (
+        cfg_exp.is_cluster_run if hasattr(cfg_exp, "is_cluster_run") else False
+    )
     nolog = cfg_exp.get(
         "nolog", False
     )  # To use do `python proteinfoundation/train.py +nolog=true`
@@ -254,7 +260,7 @@ def main(cfg_exp) -> None:
         store_n_log_configs(cfg_exp, cfg_data, run_name, ckpt_path_store, wandb_logger)
 
     # Train
-    plugins = [SLURMEnvironment(auto_requeue=True)] if is_cluster_run else []
+    plugins = [SLURMEnvironment(auto_requeue=True)] if os.environ.get("SLURM_JOB_ID") else []
     show_prog_bar = show_prog_bar or not is_cluster_run
     trainer = L.Trainer(
         max_epochs=cfg_exp.opt.max_epochs,
