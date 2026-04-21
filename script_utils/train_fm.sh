@@ -77,6 +77,7 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/train.py \
     dataset.datamodule.batch_size=2 \
     dataset.datamodule.dataselector.max_length=${sequence_max_length} \
     nn=${nn} \
+    +nn.use_residue_type_x=true \
     autoencoder_ckpt_path=checkpoints_${ae_pretrain_ckpt_path}/${autoencoder_ckpt_path} \
     pretrain_ckpt_path=checkpoints_${nn_pretrain_ckpt_path}/${nn_ckpt_path} \
     log.log_wandb=true \

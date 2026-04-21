@@ -67,6 +67,7 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/generate.py \
     --config_name "${config_name}_${pretrain_ckpt}" \
     --job_id ${job_id} \
     run_name_=${pretrain_ckpt}_${config_name} \
+    +nn.use_residue_type_x=true \
     ckpt_path=checkpoints_${pretrain_ckpt} \
     autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
     $*

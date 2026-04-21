@@ -703,14 +703,15 @@ class OptionalResidueTypeSeqFeat(ResidueTypeSeqFeat):
     If `use_residue_type_feature` not in batch, defaults to False.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, use_residue_type_x=False, **kwargs):
         super().__init__(**kwargs)
+        self.use_residue_type_x = use_residue_type_x
         self._has_logged = False
 
     def forward(self, batch):
         if batch.get("use_residue_type_feature", False):
             return super().forward(batch)
-        elif batch.get("use_residue_type_x", False):
+        elif self.use_residue_type_x:
             data = {
                 "residue_type": pseudo_residue_type(batch["residue_type"]),
                 "mask_dict": {"residue_type": batch["mask_dict"]["residue_type"]}
