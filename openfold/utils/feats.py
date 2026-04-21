@@ -36,18 +36,16 @@ def atom_gather(atom_feat, atom_idx, dim):
 
 
 def pseudo_residue_type(aatype):
-    x = torch.zeros(len(rc.restype_list), dtype=aatype.dtype, device=aatype.device)
     # FIX: Use 0 insead of rc.unk_restype_index, otherwise it will failed
-    # x[rc.PROT - 1] = rc.unk_restype_index
+    # x = torch.full_like(aatype, rc.unk_restype_index)
+    x = torch.zeros_like(aatype)
     if -1 < rc.dna_from_idx < rc.dna_to_idx:
-        x[rc.DNA - 1] = rc.dna_to_idx
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx) & (aatype != -1)
+        x = torch.where(is_dna, rc.dna_to_idx, x)
     if -1 < rc.rna_from_idx < rc.rna_to_idx:
-        x[rc.RNA - 1] = rc.rna_to_idx
-    is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
-    is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
-    return torch.where(
-        is_dna, x[rc.DNA - 1], torch.where(is_rna, x[rc.RNA - 1], x[rc.PROT - 1])
-    )
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx) & (aatype != -1)
+        x = torch.where(is_rna, rc.rna_to_idx, x)
+    return x
 
 
 def pseudo_beta_fn(aatype, all_atom_positions, all_atom_masks):
