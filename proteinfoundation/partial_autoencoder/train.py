@@ -14,6 +14,7 @@ import lightning as L
 import torch
 import wandb
 from dotenv import load_dotenv
+from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 from lightning.pytorch.utilities import rank_zero_only
@@ -111,6 +112,9 @@ def initialize_callbacks(cfg_exp):
                 min_opt_steps=cfg_exp.opt.skip_large_grad_updates.min_opt_steps,
             )
         )
+    if hasattr(cfg_exp.opt, "scheduler"):
+        log_info(f"Using Learning Rate Motitor {cfg_exp.opt.scheduler}")
+        callbacks.append(LearningRateMonitor())
 
     callbacks.append(LogEpochTimeCallback())
     callbacks.append(LogSetpTimeCallback())

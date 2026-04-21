@@ -16,6 +16,7 @@ import loralib as lora
 import torch
 import wandb
 from dotenv import load_dotenv
+from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 from lightning.pytorch.utilities import rank_zero_only
@@ -152,6 +153,9 @@ def initialize_callbacks(cfg_exp):
         callbacks.append(GradAndWeightAnalysisCallback())
     if cfg_exp.opt.skip_nan_grad:
         callbacks.append(SkipNanGradCallback())
+    if hasattr(cfg_exp.opt, "scheduler"):
+        log_info(f"Using Learning Rate Motitor {cfg_exp.opt.scheduler}")
+        callbacks.append(LearningRateMonitor())
 
     callbacks.append(LogEpochTimeCallback())
     callbacks.append(LogSetpTimeCallback())
