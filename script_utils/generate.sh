@@ -54,6 +54,7 @@ fi
 pushd ..
 
 pretrain_ckpt=${pretrain_ckpt:-"laproteina"}
+pretrain_prefix=${pretrain_prefix:-"finetuning"}
 config_name="inference_${config_name}"
 if [ ${create_config} -eq 1 ]; then
   pushd configs
@@ -68,8 +69,8 @@ PYTHONPATH=. DATA_PATH=${DATA_PATH:-.} python proteinfoundation/generate.py \
     --job_id ${job_id} \
     run_name_=${pretrain_ckpt}_${config_name} \
     +nn.use_residue_type_x=true \
-    ckpt_path=checkpoints_${pretrain_ckpt} \
-    autoencoder_ckpt_path=checkpoints_${pretrain_ckpt}/${autoencoder_ckpt_path} \
+    ckpt_path=${pretrain_prefix}_${pretrain_ckpt} \
+    autoencoder_ckpt_path=${pretrain_prefix}_${pretrain_ckpt}/${autoencoder_ckpt_path} \
     $*
 
 # +generation.apply_residue_type_filter=true

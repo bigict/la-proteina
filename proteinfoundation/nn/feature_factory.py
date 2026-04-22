@@ -714,8 +714,11 @@ class OptionalResidueTypeSeqFeat(ResidueTypeSeqFeat):
         elif self.use_residue_type_x:
             data = {
                 "residue_type": pseudo_residue_type(batch["residue_type"]),
-                "mask_dict": {"residue_type": batch["mask_dict"]["residue_type"]}
             }
+            if "mask_dict" in batch:
+                data["mask_dict"] = {"residue_type": batch["mask_dict"]["residue_type"]}
+            else:
+                data["mask_dict"] = {"residue_type": batch["residue_type"] != -1}
             return super().forward(data)
         else:
             b, n = self.extract_bs_and_n(batch)

@@ -38,7 +38,7 @@ def atom_gather(atom_feat, atom_idx, dim):
 def pseudo_residue_type(aatype):
     # FIX: Use 0 insead of rc.unk_restype_index, otherwise it will failed
     # x = torch.full_like(aatype, rc.unk_restype_index)
-    x = torch.zeros_like(aatype)
+    x = torch.where(aatype != -1, 0, -1)
     if -1 < rc.dna_from_idx < rc.dna_to_idx:
         is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx) & (aatype != -1)
         x = torch.where(is_dna, rc.dna_to_idx, x)

@@ -430,7 +430,9 @@ class GenDataset(Dataset):
             )
             return result
 
-        result["residue_type"] = torch.full((self.nres[index], ), self.unk_restype_index)
+        result["residue_type"] = torch.full(
+            (result["nsamples"], self.nres[index]), self.unk_restype_index
+        )
 
         # Fallback: unconditional
         return result
