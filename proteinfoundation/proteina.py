@@ -261,6 +261,11 @@ class Proteina(L.LightningModule):
             self.update_n_log_nsamples_processed(bs)
             self.log_nparams()
 
+        if hasattr(self.cfg_exp.loss, "sqrt_length_scale"):
+            length_scaler = torch.sqrt(
+                (torch.mean(torch.sum(batch['mask'], dim=-1) + 1e-6)) / self.cfg_exp.loss.sqrt_length_scale
+            )
+            return train_loss * length_scaler
         return train_loss
 
     def add_clean_samples(self, batch: Dict) -> Dict:
