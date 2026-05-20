@@ -1,5 +1,6 @@
 from collections import defaultdict
 import itertools
+import math
 import pathlib
 import random
 from typing import List, Optional, Union
@@ -10,32 +11,22 @@ from tqdm.auto import tqdm
 from graphein.protein.graphs import (
     read_pdb_to_dataframe, select_chains, sort_dataframe
 )
+from graphein.protein.tensor.sequence import get_sequence
 from graphein.protein.utils import save_pdb_df_to_pdb
 
 
-def iter_chain_orders(args, chain_group):
-    if not args.do_chain_permutation:
-        yield tuple(chain_group)
-        return
-
-    permutation_iter = itertools.permutations(tuple(chain_group))
-    sampled_count = 0
-
-    while True:
-        batch = list(itertools.islice(permutation_iter, 100))
-        if not batch:
-            return
-
-        random.shuffle(batch)
-        keep_n = 10 if len(batch) == 100 else len(batch)
-        for chain_order in batch[:keep_n]:
-            yield chain_order
-            sampled_count += 1
-            if (
-                args.topk_chain_permutation is not None
-                and sampled_count >= args.topk_chain_permutation
-            ):
-                return
+def yield_chain_permutations(chain_group: List[str], topk:Optional[int] = None):
+    if topk is None or topk >= math.factorial(len(chain_group)):
+        yield from itertools.permutations(chain_group)
+    else:
+        i = 0
+        chain_permutations_seen = set()
+        while i < topk:
+            random.shuffle(chain_group)
+            if tuple(chain_group) not in chain_permutations_seen:
+                yield chain_group
+                chain_permutations_seen.add(tuple(chain_group))
+                i += 1
 
 
 def read_pdb(
@@ -71,7 +62,7 @@ def rearrange_pdb(
     for i, (_, g) in enumerate(chains):
         residue_number_min = g["residue_number"].min()
         residue_number_offset = (
-            residue_number_last + (pseudo_linker_length if i > 0 else 0)
+            residue_number_last + i * pseudo_linker_length
         )
         g["residue_number"] = g["residue_number"].apply(
             lambda x: x - residue_number_min + 1 + residue_number_offset
@@ -96,30 +87,34 @@ def main(args):
     print(f"# items in chain_idx: {len(chain_group_dict)}")
 
     for pdb_file in tqdm(args.pdb_file):
-        full_df = read_pdb(path=pdb_file)
+        df_pdb = read_pdb(path=pdb_file)
         chain_groups = chain_group_dict.get(
-            pdb_file.stem, [full_df["chain_id"].unique().tolist()]
+            pdb_file.stem, [df_pdb["chain_id"].unique().tolist()]
         )
 
         for chain_group in chain_groups:
-            selected_df = (
-                select_chains(full_df, chain_group)
-                if chain_group else full_df.copy()
+            df = (
+                select_chains(df_pdb, chain_group) if chain_group else df_pdb.copy()
             )
-            if selected_df.empty:
+            if df.empty:
                 continue
 
-            for chain_selection in iter_chain_orders(args, chain_group):
+            if args.sequence_max_length is not None:
+                if len(get_sequence(df, list_of_three=True)) > args.sequence_max_length:
+                    continue
+
+            for chain_selection in (
+                yield_chain_permutations(chain_group, args.topk_chain_permutation)
+                if args.do_chain_permutation else [chain_group]
+            ):
                 # rearrange chains & residue_number
-                rearranged_df = rearrange_pdb(
-                    selected_df.copy(),
-                    chain_selection,
-                    pseudo_linker_length=args.pseudo_linker_length,
+                df = rearrange_pdb(
+                    df, chain_selection, pseudo_linker_length=args.pseudo_linker_length
                 )
 
-                chain_selection = "".join(chain_selection)
+                chain_selection = "-".join(chain_selection)
                 save_pdb(
-                    args.output_dir / f"{pdb_file.stem}_{chain_selection}.pdb", rearranged_df
+                    args.output_dir / f"{args.pdb_prefix}{pdb_file.stem}_{chain_selection}.pdb", df
                 )
 
 
@@ -134,12 +129,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--output_dir", type=pathlib.Path, default=".", help="output dir"
     )
+    parser.add_argument(
+        "--pdb_prefix", type=str, default="", help="add a prefix to each output pdb file"
+    )
     parser.add_argument("--chain_idx", type=str, default=None, help="chain idx file")
     parser.add_argument(
         "--do_chain_permutation", action="store_true", help="do chain permutation"
     )
     parser.add_argument(
         "--topk_chain_permutation", type=int, default=None, help="topk chain permutation"
+    )
+    parser.add_argument(
+        "--sequence_max_length", type=int, default=None, help="maximum sequence length"
     )
     parser.add_argument(
         "--pseudo_linker_length",
