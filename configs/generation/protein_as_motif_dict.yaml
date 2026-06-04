@@ -1,0 +1,1040 @@
+2EVI_A_MA0343_1:
+  contig_string: A1-290/27
+  motif_pdb_path: motif_benchmark_pdb_files/2evi_A_protein.pdb
+  motif_only: True
+  motif_min_length: 317
+  motif_max_length: 317
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2EVF_A_MA0343_1:
+  contig_string: A1-290/27
+  motif_pdb_path: motif_benchmark_pdb_files/2evf_A_protein.pdb
+  motif_only: True
+  motif_min_length: 317
+  motif_max_length: 317
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2EVJ_A_MA0343_1:
+  contig_string: A1-290/27
+  motif_pdb_path: motif_benchmark_pdb_files/2evj_A_protein.pdb
+  motif_only: True
+  motif_min_length: 317
+  motif_max_length: 317
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2ETW_A_MA0343_1:
+  contig_string: A1-297/27
+  motif_pdb_path: motif_benchmark_pdb_files/2etw_A_protein.pdb
+  motif_only: True
+  motif_min_length: 324
+  motif_max_length: 324
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2EUZ_A_MA0343_1:
+  contig_string: A1-290/27
+  motif_pdb_path: motif_benchmark_pdb_files/2euz_A_protein.pdb
+  motif_only: True
+  motif_min_length: 317
+  motif_max_length: 317
+  segment_order: A
+  atom_selection_mode: "all_atom"
+7DCJ_B_MA0486_2:
+  contig_string: B1-110/26
+  motif_pdb_path: motif_benchmark_pdb_files/7dcj_B_protein.pdb
+  motif_only: True
+  motif_min_length: 136
+  motif_max_length: 136
+  segment_order: B
+  atom_selection_mode: "all_atom"
+7DCJ_A_HSF1_HUMAN_H11MO_0_A:
+  contig_string: A1-94/26
+  motif_pdb_path: motif_benchmark_pdb_files/7dcj_A_protein.pdb
+  motif_only: True
+  motif_min_length: 120
+  motif_max_length: 120
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5HDN_A_HSF1_HUMAN_H11MO_0_A:
+  contig_string: A1-101/48
+  motif_pdb_path: motif_benchmark_pdb_files/5hdn_A_protein.pdb
+  motif_only: True
+  motif_min_length: 149
+  motif_max_length: 149
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3WTW_C_ETS1_HUMAN_H11MO_0_A:
+  contig_string: C1-118/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wtw_C_protein.pdb
+  motif_only: True
+  motif_min_length: 178
+  motif_max_length: 178
+  segment_order: C
+  atom_selection_mode: "all_atom"
+4L0Z_B_MA0098_3:
+  contig_string: B1-101/32
+  motif_pdb_path: motif_benchmark_pdb_files/4l0z_B_protein.pdb
+  motif_only: True
+  motif_min_length: 133
+  motif_max_length: 133
+  segment_order: B
+  atom_selection_mode: "all_atom"
+3WTU_C_ETS1_HUMAN_H11MO_0_A:
+  contig_string: C1-118/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wtu_C_protein.pdb
+  motif_only: True
+  motif_min_length: 178
+  motif_max_length: 178
+  segment_order: C
+  atom_selection_mode: "all_atom"
+3WTS_C_ETS1_HUMAN_H11MO_0_A:
+  contig_string: C1-118/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wts_C_protein.pdb
+  motif_only: True
+  motif_min_length: 178
+  motif_max_length: 178
+  segment_order: C
+  atom_selection_mode: "all_atom"
+3WTW_H_MA0098_3:
+  contig_string: H1-101/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wtw_H_protein.pdb
+  motif_only: True
+  motif_min_length: 161
+  motif_max_length: 161
+  segment_order: H
+  atom_selection_mode: "all_atom"
+1N6J_A_MA0660_1:
+  contig_string: A1-93/28
+  motif_pdb_path: motif_benchmark_pdb_files/1n6j_A_protein.pdb
+  motif_only: True
+  motif_min_length: 121
+  motif_max_length: 121
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6BYY_A_MA0660_1:
+  contig_string: A1-91/55
+  motif_pdb_path: motif_benchmark_pdb_files/6byy_A_protein.pdb
+  motif_only: True
+  motif_min_length: 146
+  motif_max_length: 146
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6BYY_D_MA0660_1:
+  contig_string: D1-89/55
+  motif_pdb_path: motif_benchmark_pdb_files/6byy_D_protein.pdb
+  motif_only: True
+  motif_min_length: 144
+  motif_max_length: 144
+  segment_order: D
+  atom_selection_mode: "all_atom"
+1N6J_B_MEF2B_HUMAN_H11MO_0_A:
+  contig_string: B1-90/28
+  motif_pdb_path: motif_benchmark_pdb_files/1n6j_B_protein.pdb
+  motif_only: True
+  motif_min_length: 118
+  motif_max_length: 118
+  segment_order: B
+  atom_selection_mode: "all_atom"
+6BYY_B_MA0660_1:
+  contig_string: B1-91/55
+  motif_pdb_path: motif_benchmark_pdb_files/6byy_B_protein.pdb
+  motif_only: True
+  motif_min_length: 146
+  motif_max_length: 146
+  segment_order: B
+  atom_selection_mode: "all_atom"
+1C7U_B_MEF2A_HUMAN_H11MO_0_A:
+  contig_string: B1-74/40
+  motif_pdb_path: motif_benchmark_pdb_files/1c7u_B_protein.pdb
+  motif_only: True
+  motif_min_length: 114
+  motif_max_length: 114
+  segment_order: B
+  atom_selection_mode: "all_atom"
+1C7U_A_MEF2A_HUMAN_H11MO_0_A:
+  contig_string: A1-74/40
+  motif_pdb_path: motif_benchmark_pdb_files/1c7u_A_protein.pdb
+  motif_only: True
+  motif_min_length: 114
+  motif_max_length: 114
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3KOV_B_MEF2A_HUMAN_H11MO_0_A:
+  contig_string: B1-90/52
+  motif_pdb_path: motif_benchmark_pdb_files/3kov_B_protein.pdb
+  motif_only: True
+  motif_min_length: 142
+  motif_max_length: 142
+  segment_order: B
+  atom_selection_mode: "all_atom"
+3KOV_I_MA0052_4:
+  contig_string: I1-90/52
+  motif_pdb_path: motif_benchmark_pdb_files/3kov_I_protein.pdb
+  motif_only: True
+  motif_min_length: 142
+  motif_max_length: 142
+  segment_order: I
+  atom_selection_mode: "all_atom"
+6BYY_A_MEF2A_HUMAN_H11MO_0_A:
+  contig_string: A1-91/55
+  motif_pdb_path: motif_benchmark_pdb_files/6byy_A_protein.pdb
+  motif_only: True
+  motif_min_length: 146
+  motif_max_length: 146
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3IAG_C_SUH_MOUSE_H11MO_0_A:
+  contig_string: C1-422/30
+  motif_pdb_path: motif_benchmark_pdb_files/3iag_C_protein.pdb
+  motif_only: True
+  motif_min_length: 452
+  motif_max_length: 452
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6WQU_C_SUH_MOUSE_H11MO_0_A:
+  contig_string: C1-417/30
+  motif_pdb_path: motif_benchmark_pdb_files/6wqu_C_protein.pdb
+  motif_only: True
+  motif_min_length: 447
+  motif_max_length: 447
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6DKS_G_SUH_MOUSE_H11MO_0_A:
+  contig_string: G1-422/60
+  motif_pdb_path: motif_benchmark_pdb_files/6dks_G_protein.pdb
+  motif_only: True
+  motif_min_length: 482
+  motif_max_length: 482
+  segment_order: G
+  atom_selection_mode: "all_atom"
+6DKS_C_SUH_MOUSE_H11MO_0_A:
+  contig_string: C1-417/60
+  motif_pdb_path: motif_benchmark_pdb_files/6dks_C_protein.pdb
+  motif_only: True
+  motif_min_length: 477
+  motif_max_length: 477
+  segment_order: C
+  atom_selection_mode: "all_atom"
+3V79_C_MA1116_1:
+  contig_string: C1-424/36
+  motif_pdb_path: motif_benchmark_pdb_files/3v79_C_protein.pdb
+  motif_only: True
+  motif_min_length: 460
+  motif_max_length: 460
+  segment_order: C
+  atom_selection_mode: "all_atom"
+1SRS_B_SRF_HUMAN_H11MO_0_A:
+  contig_string: B1-80/37
+  motif_pdb_path: motif_benchmark_pdb_files/1srs_B_protein.pdb
+  motif_only: True
+  motif_min_length: 117
+  motif_max_length: 117
+  segment_order: B
+  atom_selection_mode: "all_atom"
+1SRS_A_SRF_HUMAN_H11MO_0_A:
+  contig_string: A1-84/37
+  motif_pdb_path: motif_benchmark_pdb_files/1srs_A_protein.pdb
+  motif_only: True
+  motif_min_length: 121
+  motif_max_length: 121
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1RAM_A_TF65_MOUSE_H11MO_0_A:
+  contig_string: A1-273/40
+  motif_pdb_path: motif_benchmark_pdb_files/1ram_A_protein.pdb
+  motif_only: True
+  motif_min_length: 313
+  motif_max_length: 313
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1VKX_A_TF65_MOUSE_H11MO_0_A:
+  contig_string: A1-273/24
+  motif_pdb_path: motif_benchmark_pdb_files/1vkx_A_protein.pdb
+  motif_only: True
+  motif_min_length: 297
+  motif_max_length: 297
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2I9T_A_TF65_MOUSE_H11MO_0_A:
+  contig_string: A1-275/34
+  motif_pdb_path: motif_benchmark_pdb_files/2i9t_A_protein.pdb
+  motif_only: True
+  motif_min_length: 309
+  motif_max_length: 309
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3GUT_E_MA0107_1:
+  contig_string: E1-273/104
+  motif_pdb_path: motif_benchmark_pdb_files/3gut_E_protein.pdb
+  motif_only: True
+  motif_min_length: 377
+  motif_max_length: 377
+  segment_order: E
+  atom_selection_mode: "all_atom"
+1RAM_B_TF65_MOUSE_H11MO_0_A:
+  contig_string: B1-273/40
+  motif_pdb_path: motif_benchmark_pdb_files/1ram_B_protein.pdb
+  motif_only: True
+  motif_min_length: 313
+  motif_max_length: 313
+  segment_order: B
+  atom_selection_mode: "all_atom"
+7JM4_H_MA1419_1:
+  contig_string: H1-108/76
+  motif_pdb_path: motif_benchmark_pdb_files/7jm4_H_protein.pdb
+  motif_only: True
+  motif_min_length: 184
+  motif_max_length: 184
+  segment_order: H
+  atom_selection_mode: "all_atom"
+7JM4_A_MA1419_1:
+  contig_string: A1-109/76
+  motif_pdb_path: motif_benchmark_pdb_files/7jm4_A_protein.pdb
+  motif_only: True
+  motif_min_length: 185
+  motif_max_length: 185
+  segment_order: A
+  atom_selection_mode: "all_atom"
+7JM4_G_MA1419_1:
+  contig_string: G1-109/76
+  motif_pdb_path: motif_benchmark_pdb_files/7jm4_G_protein.pdb
+  motif_only: True
+  motif_min_length: 185
+  motif_max_length: 185
+  segment_order: G
+  atom_selection_mode: "all_atom"
+7JM4_B_MA1419_1:
+  contig_string: B1-107/76
+  motif_pdb_path: motif_benchmark_pdb_files/7jm4_B_protein.pdb
+  motif_only: True
+  motif_min_length: 183
+  motif_max_length: 183
+  segment_order: B
+  atom_selection_mode: "all_atom"
+2ADY_A_MA0106_3:
+  contig_string: A1-198/24
+  motif_pdb_path: motif_benchmark_pdb_files/2ady_A_protein.pdb
+  motif_only: True
+  motif_min_length: 222
+  motif_max_length: 222
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3Q05_B_P53_HUMAN_H11MO_0_A:
+  contig_string: B1-234/52
+  motif_pdb_path: motif_benchmark_pdb_files/3q05_B_protein.pdb
+  motif_only: True
+  motif_min_length: 286
+  motif_max_length: 286
+  segment_order: B
+  atom_selection_mode: "all_atom"
+6FJ5_C_P53_HUMAN_H11MO_0_A:
+  contig_string: C1-199/40
+  motif_pdb_path: motif_benchmark_pdb_files/6fj5_C_protein.pdb
+  motif_only: True
+  motif_min_length: 239
+  motif_max_length: 239
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6FJ5_D_P53_HUMAN_H11MO_0_A:
+  contig_string: D1-199/40
+  motif_pdb_path: motif_benchmark_pdb_files/6fj5_D_protein.pdb
+  motif_only: True
+  motif_min_length: 239
+  motif_max_length: 239
+  segment_order: D
+  atom_selection_mode: "all_atom"
+6FJ5_A_P53_HUMAN_H11MO_0_A:
+  contig_string: A1-199/40
+  motif_pdb_path: motif_benchmark_pdb_files/6fj5_A_protein.pdb
+  motif_only: True
+  motif_min_length: 239
+  motif_max_length: 239
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6VGE_A_ERG_HUMAN_H11MO_0_A:
+  contig_string: A1-98/32
+  motif_pdb_path: motif_benchmark_pdb_files/6vge_A_protein.pdb
+  motif_only: True
+  motif_min_length: 130
+  motif_max_length: 130
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6VGG_A_ERG_HUMAN_H11MO_0_A:
+  contig_string: A1-98/32
+  motif_pdb_path: motif_benchmark_pdb_files/6vgg_A_protein.pdb
+  motif_only: True
+  motif_min_length: 130
+  motif_max_length: 130
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6VG2_D_FLI1_HUMAN_H11MO_0_A:
+  contig_string: D1-92/64
+  motif_pdb_path: motif_benchmark_pdb_files/6vg2_D_protein.pdb
+  motif_only: True
+  motif_min_length: 156
+  motif_max_length: 156
+  segment_order: D
+  atom_selection_mode: "all_atom"
+6VG2_A_FLI1_HUMAN_H11MO_0_A:
+  contig_string: A1-93/64
+  motif_pdb_path: motif_benchmark_pdb_files/6vg2_A_protein.pdb
+  motif_only: True
+  motif_min_length: 157
+  motif_max_length: 157
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6VG8_A_FLI1_HUMAN_H11MO_0_A:
+  contig_string: A1-96/32
+  motif_pdb_path: motif_benchmark_pdb_files/6vg8_A_protein.pdb
+  motif_only: True
+  motif_min_length: 128
+  motif_max_length: 128
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6LBI_L_FOXO1_HUMAN_H11MO_0_A:
+  contig_string: L1-76/120
+  motif_pdb_path: motif_benchmark_pdb_files/6lbi_L_protein.pdb
+  motif_only: True
+  motif_min_length: 196
+  motif_max_length: 196
+  segment_order: L
+  atom_selection_mode: "all_atom"
+6LBI_K_FOXO1_HUMAN_H11MO_0_A:
+  contig_string: K1-80/120
+  motif_pdb_path: motif_benchmark_pdb_files/6lbi_K_protein.pdb
+  motif_only: True
+  motif_min_length: 200
+  motif_max_length: 200
+  segment_order: K
+  atom_selection_mode: "all_atom"
+6LBI_D_FOXO1_HUMAN_H11MO_0_A:
+  contig_string: D1-81/120
+  motif_pdb_path: motif_benchmark_pdb_files/6lbi_D_protein.pdb
+  motif_only: True
+  motif_min_length: 201
+  motif_max_length: 201
+  segment_order: D
+  atom_selection_mode: "all_atom"
+3COA_C_FOXO1_HUMAN_H11MO_0_A:
+  contig_string: C1-86/64
+  motif_pdb_path: motif_benchmark_pdb_files/3coa_C_protein.pdb
+  motif_only: True
+  motif_min_length: 150
+  motif_max_length: 150
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6LBI_C_FOXO1_HUMAN_H11MO_0_A:
+  contig_string: C1-84/120
+  motif_pdb_path: motif_benchmark_pdb_files/6lbi_C_protein.pdb
+  motif_only: True
+  motif_min_length: 204
+  motif_max_length: 204
+  segment_order: C
+  atom_selection_mode: "all_atom"
+1PZU_H_NFAC2_HUMAN_H11MO_0_B:
+  contig_string: H1-276/84
+  motif_pdb_path: motif_benchmark_pdb_files/1pzu_H_protein.pdb
+  motif_only: True
+  motif_min_length: 360
+  motif_max_length: 360
+  segment_order: H
+  atom_selection_mode: "all_atom"
+1PZU_L_MA0152_1:
+  contig_string: L1-276/84
+  motif_pdb_path: motif_benchmark_pdb_files/1pzu_L_protein.pdb
+  motif_only: True
+  motif_min_length: 360
+  motif_max_length: 360
+  segment_order: L
+  atom_selection_mode: "all_atom"
+5LTY_K_CDX2_HUMAN_H11MO_0_A:
+  contig_string: K1-71/68
+  motif_pdb_path: motif_benchmark_pdb_files/5lty_K_protein.pdb
+  motif_only: True
+  motif_min_length: 139
+  motif_max_length: 139
+  segment_order: K
+  atom_selection_mode: "all_atom"
+5LTY_M_MA0465_2:
+  contig_string: M1-70/68
+  motif_pdb_path: motif_benchmark_pdb_files/5lty_M_protein.pdb
+  motif_only: True
+  motif_min_length: 138
+  motif_max_length: 138
+  segment_order: M
+  atom_selection_mode: "all_atom"
+5VPF_B_JUND_HUMAN_H11MO_0_A:
+  contig_string: B1-67/76
+  motif_pdb_path: motif_benchmark_pdb_files/5vpf_B_protein.pdb
+  motif_only: True
+  motif_min_length: 143
+  motif_max_length: 143
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5YEF_B_MA1930_1:
+  contig_string: B1-167/216
+  motif_pdb_path: motif_benchmark_pdb_files/5yef_B_protein.pdb
+  motif_only: True
+  motif_min_length: 383
+  motif_max_length: 383
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5UND_A_MA1930_1:
+  contig_string: A1-171/103
+  motif_pdb_path: motif_benchmark_pdb_files/5und_A_protein.pdb
+  motif_only: True
+  motif_min_length: 274
+  motif_max_length: 274
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5YEF_J_CTCF_HUMAN_H11MO_0_A:
+  contig_string: J1-167/216
+  motif_pdb_path: motif_benchmark_pdb_files/5yef_J_protein.pdb
+  motif_only: True
+  motif_min_length: 383
+  motif_max_length: 383
+  segment_order: J
+  atom_selection_mode: "all_atom"
+5UND_B_MA1930_1:
+  contig_string: B1-145/103
+  motif_pdb_path: motif_benchmark_pdb_files/5und_B_protein.pdb
+  motif_only: True
+  motif_min_length: 248
+  motif_max_length: 248
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5YEF_G_MA1930_1:
+  contig_string: G1-169/216
+  motif_pdb_path: motif_benchmark_pdb_files/5yef_G_protein.pdb
+  motif_only: True
+  motif_min_length: 385
+  motif_max_length: 385
+  segment_order: G
+  atom_selection_mode: "all_atom"
+2WTY_B_MA0117_2:
+  contig_string: B1-97/39
+  motif_pdb_path: motif_benchmark_pdb_files/2wty_B_protein.pdb
+  motif_only: True
+  motif_min_length: 136
+  motif_max_length: 136
+  segment_order: B
+  atom_selection_mode: "all_atom"
+2WTY_A_MA0117_2:
+  contig_string: A1-94/39
+  motif_pdb_path: motif_benchmark_pdb_files/2wty_A_protein.pdb
+  motif_only: True
+  motif_min_length: 133
+  motif_max_length: 133
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6X6E_B_MA0113_3:
+  contig_string: B1-71/34
+  motif_pdb_path: motif_benchmark_pdb_files/6x6e_B_protein.pdb
+  motif_only: True
+  motif_min_length: 105
+  motif_max_length: 105
+  segment_order: B
+  atom_selection_mode: "all_atom"
+6X6E_A_GCR_HUMAN_H11MO_0_A:
+  contig_string: A1-73/34
+  motif_pdb_path: motif_benchmark_pdb_files/6x6e_A_protein.pdb
+  motif_only: True
+  motif_min_length: 107
+  motif_max_length: 107
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5EMQ_B_GCR_HUMAN_H11MO_0_A:
+  contig_string: B1-72/36
+  motif_pdb_path: motif_benchmark_pdb_files/5emq_B_protein.pdb
+  motif_only: True
+  motif_min_length: 108
+  motif_max_length: 108
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5EMP_B_MA0113_3:
+  contig_string: B1-72/35
+  motif_pdb_path: motif_benchmark_pdb_files/5emp_B_protein.pdb
+  motif_only: True
+  motif_min_length: 107
+  motif_max_length: 107
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5EMP_A_GCR_HUMAN_H11MO_0_A:
+  contig_string: A1-71/35
+  motif_pdb_path: motif_benchmark_pdb_files/5emp_A_protein.pdb
+  motif_only: True
+  motif_min_length: 106
+  motif_max_length: 106
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1LE8_B_MA0328_2:
+  contig_string: B1-74/40
+  motif_pdb_path: motif_benchmark_pdb_files/1le8_B_protein.pdb
+  motif_only: True
+  motif_min_length: 114
+  motif_max_length: 114
+  segment_order: B
+  atom_selection_mode: "all_atom"
+6FBR_B_RXRA_HUMAN_H11MO_0_A:
+  contig_string: B1-81/34
+  motif_pdb_path: motif_benchmark_pdb_files/6fbr_B_protein.pdb
+  motif_only: True
+  motif_min_length: 115
+  motif_max_length: 115
+  segment_order: B
+  atom_selection_mode: "all_atom"
+4CN3_D_RXRA_HUMAN_H11MO_0_A:
+  contig_string: D1-78/68
+  motif_pdb_path: motif_benchmark_pdb_files/4cn3_D_protein.pdb
+  motif_only: True
+  motif_min_length: 146
+  motif_max_length: 146
+  segment_order: D
+  atom_selection_mode: "all_atom"
+4CN3_C_MA0065_1:
+  contig_string: C1-84/68
+  motif_pdb_path: motif_benchmark_pdb_files/4cn3_C_protein.pdb
+  motif_only: True
+  motif_min_length: 152
+  motif_max_length: 152
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6FBQ_A_MA0065_1:
+  contig_string: A1-80/34
+  motif_pdb_path: motif_benchmark_pdb_files/6fbq_A_protein.pdb
+  motif_only: True
+  motif_min_length: 114
+  motif_max_length: 114
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1R0N_A_MA0115_1:
+  contig_string: A1-78/36
+  motif_pdb_path: motif_benchmark_pdb_files/1r0n_A_protein.pdb
+  motif_only: True
+  motif_min_length: 114
+  motif_max_length: 114
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2ERG_B_MA0324_1:
+  contig_string: B1-65/30
+  motif_pdb_path: motif_benchmark_pdb_files/2erg_B_protein.pdb
+  motif_only: True
+  motif_min_length: 95
+  motif_max_length: 95
+  segment_order: B
+  atom_selection_mode: "all_atom"
+2ERG_A_MA0324_1:
+  contig_string: A1-65/30
+  motif_pdb_path: motif_benchmark_pdb_files/2erg_A_protein.pdb
+  motif_only: True
+  motif_min_length: 95
+  motif_max_length: 95
+  segment_order: A
+  atom_selection_mode: "all_atom"
+7OH9_K_MA0386_1:
+  contig_string: K1-180/290
+  motif_pdb_path: motif_benchmark_pdb_files/7oh9_K_protein.pdb
+  motif_only: True
+  motif_min_length: 470
+  motif_max_length: 470
+  segment_order: K
+  atom_selection_mode: "all_atom"
+4R2D_A_MA0162_4:
+  contig_string: A1-87/20
+  motif_pdb_path: motif_benchmark_pdb_files/4r2d_A_protein.pdb
+  motif_only: True
+  motif_min_length: 107
+  motif_max_length: 107
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1A1J_A_MA0162_1:
+  contig_string: A1-84/22
+  motif_pdb_path: motif_benchmark_pdb_files/1a1j_A_protein.pdb
+  motif_only: True
+  motif_min_length: 106
+  motif_max_length: 106
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4X9J_A_MA0162_4:
+  contig_string: A1-86/18
+  motif_pdb_path: motif_benchmark_pdb_files/4x9j_A_protein.pdb
+  motif_only: True
+  motif_min_length: 104
+  motif_max_length: 104
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1A1I_A_MA0162_1:
+  contig_string: A1-85/22
+  motif_pdb_path: motif_benchmark_pdb_files/1a1i_A_protein.pdb
+  motif_only: True
+  motif_min_length: 107
+  motif_max_length: 107
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1A1G_A_MA0162_1:
+  contig_string: A1-84/22
+  motif_pdb_path: motif_benchmark_pdb_files/1a1g_A_protein.pdb
+  motif_only: True
+  motif_min_length: 106
+  motif_max_length: 106
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1GU4_A_MA0466_3:
+  contig_string: A1-66/32
+  motif_pdb_path: motif_benchmark_pdb_files/1gu4_A_protein.pdb
+  motif_only: True
+  motif_min_length: 98
+  motif_max_length: 98
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1GU5_A_MA0466_3:
+  contig_string: A1-66/32
+  motif_pdb_path: motif_benchmark_pdb_files/1gu5_A_protein.pdb
+  motif_only: True
+  motif_min_length: 98
+  motif_max_length: 98
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2E42_A_CEBPB_HUMAN_H11MO_0_A:
+  contig_string: A1-65/32
+  motif_pdb_path: motif_benchmark_pdb_files/2e42_A_protein.pdb
+  motif_only: True
+  motif_min_length: 97
+  motif_max_length: 97
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6MG2_A_CEBPB_HUMAN_H11MO_0_A:
+  contig_string: A1-65/28
+  motif_pdb_path: motif_benchmark_pdb_files/6mg2_A_protein.pdb
+  motif_only: True
+  motif_min_length: 93
+  motif_max_length: 93
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6MG3_A_CEBPB_HUMAN_H11MO_0_A:
+  contig_string: A1-64/28
+  motif_pdb_path: motif_benchmark_pdb_files/6mg3_A_protein.pdb
+  motif_only: True
+  motif_min_length: 92
+  motif_max_length: 92
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4XRM_A_MEIS2_HUMAN_H11MO_0_B:
+  contig_string: A1-59/34
+  motif_pdb_path: motif_benchmark_pdb_files/4xrm_A_protein.pdb
+  motif_only: True
+  motif_min_length: 93
+  motif_max_length: 93
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4XRM_B_MEIS2_HUMAN_H11MO_0_B:
+  contig_string: B1-64/34
+  motif_pdb_path: motif_benchmark_pdb_files/4xrm_B_protein.pdb
+  motif_only: True
+  motif_min_length: 98
+  motif_max_length: 98
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5BNG_B_MEIS2_HUMAN_H11MO_0_B:
+  contig_string: B1-60/44
+  motif_pdb_path: motif_benchmark_pdb_files/5bng_B_protein.pdb
+  motif_only: True
+  motif_min_length: 104
+  motif_max_length: 104
+  segment_order: B
+  atom_selection_mode: "all_atom"
+5KE6_A_KLF4_MOUSE_H11MO_0_A:
+  contig_string: A1-85/20
+  motif_pdb_path: motif_benchmark_pdb_files/5ke6_A_protein.pdb
+  motif_only: True
+  motif_min_length: 105
+  motif_max_length: 105
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5KE8_A_MA0039_2:
+  contig_string: A1-85/18
+  motif_pdb_path: motif_benchmark_pdb_files/5ke8_A_protein.pdb
+  motif_only: True
+  motif_min_length: 103
+  motif_max_length: 103
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2WBU_A_KLF4_MOUSE_H11MO_0_A:
+  contig_string: A1-85/20
+  motif_pdb_path: motif_benchmark_pdb_files/2wbu_A_protein.pdb
+  motif_only: True
+  motif_min_length: 105
+  motif_max_length: 105
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5KE7_A_KLF4_MOUSE_H11MO_0_A:
+  contig_string: A1-87/19
+  motif_pdb_path: motif_benchmark_pdb_files/5ke7_A_protein.pdb
+  motif_only: True
+  motif_min_length: 106
+  motif_max_length: 106
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6U81_A_DUX4_HUMAN_H11MO_0_A:
+  contig_string: A1-132/37
+  motif_pdb_path: motif_benchmark_pdb_files/6u81_A_protein.pdb
+  motif_only: True
+  motif_min_length: 169
+  motif_max_length: 169
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6A8R_A_DUX4_HUMAN_H11MO_0_A:
+  contig_string: A1-58/20
+  motif_pdb_path: motif_benchmark_pdb_files/6a8r_A_protein.pdb
+  motif_only: True
+  motif_min_length: 78
+  motif_max_length: 78
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5Z2T_D_DUX4_HUMAN_H11MO_0_A:
+  contig_string: D1-54/26
+  motif_pdb_path: motif_benchmark_pdb_files/5z2t_D_protein.pdb
+  motif_only: True
+  motif_min_length: 80
+  motif_max_length: 80
+  segment_order: D
+  atom_selection_mode: "all_atom"
+6DFY_C_MA0468_1:
+  contig_string: C1-54/28
+  motif_pdb_path: motif_benchmark_pdb_files/6dfy_C_protein.pdb
+  motif_only: True
+  motif_min_length: 82
+  motif_max_length: 82
+  segment_order: C
+  atom_selection_mode: "all_atom"
+6DFY_D_DUX4_HUMAN_H11MO_0_A:
+  contig_string: D1-52/28
+  motif_pdb_path: motif_benchmark_pdb_files/6dfy_D_protein.pdb
+  motif_only: True
+  motif_min_length: 80
+  motif_max_length: 80
+  segment_order: D
+  atom_selection_mode: "all_atom"
+1VKX_B_NFKB1_MOUSE_H11MO_0_A:
+  contig_string: B1-312/24
+  motif_pdb_path: motif_benchmark_pdb_files/1vkx_B_protein.pdb
+  motif_only: True
+  motif_min_length: 336
+  motif_max_length: 336
+  segment_order: B
+  atom_selection_mode: "all_atom"
+3GUT_D_MA0105_4:
+  contig_string: D1-312/104
+  motif_pdb_path: motif_benchmark_pdb_files/3gut_D_protein.pdb
+  motif_only: True
+  motif_min_length: 416
+  motif_max_length: 416
+  segment_order: D
+  atom_selection_mode: "all_atom"
+2I9T_B_NFKB1_MOUSE_H11MO_0_A:
+  contig_string: B1-312/34
+  motif_pdb_path: motif_benchmark_pdb_files/2i9t_B_protein.pdb
+  motif_only: True
+  motif_min_length: 346
+  motif_max_length: 346
+  segment_order: B
+  atom_selection_mode: "all_atom"
+3GUT_H_MA0105_4:
+  contig_string: H1-312/104
+  motif_pdb_path: motif_benchmark_pdb_files/3gut_H_protein.pdb
+  motif_only: True
+  motif_min_length: 416
+  motif_max_length: 416
+  segment_order: H
+  atom_selection_mode: "all_atom"
+6OD3_E_ITF2_HUMAN_H11MO_0_C:
+  contig_string: E1-62/51
+  motif_pdb_path: motif_benchmark_pdb_files/6od3_E_protein.pdb
+  motif_only: True
+  motif_min_length: 113
+  motif_max_length: 113
+  segment_order: E
+  atom_selection_mode: "all_atom"
+6OD3_B_ITF2_HUMAN_H11MO_0_C:
+  contig_string: B1-61/51
+  motif_pdb_path: motif_benchmark_pdb_files/6od3_B_protein.pdb
+  motif_only: True
+  motif_min_length: 112
+  motif_max_length: 112
+  segment_order: B
+  atom_selection_mode: "all_atom"
+6OD3_F_MA0830_2:
+  contig_string: F1-60/51
+  motif_pdb_path: motif_benchmark_pdb_files/6od3_F_protein.pdb
+  motif_only: True
+  motif_min_length: 111
+  motif_max_length: 111
+  segment_order: F
+  atom_selection_mode: "all_atom"
+6OD3_A_MA0830_2:
+  contig_string: A1-62/51
+  motif_pdb_path: motif_benchmark_pdb_files/6od3_A_protein.pdb
+  motif_only: True
+  motif_min_length: 113
+  motif_max_length: 113
+  segment_order: A
+  atom_selection_mode: "all_atom"
+7CLI_B_MA0778_1:
+  contig_string: B1-296/35
+  motif_pdb_path: motif_benchmark_pdb_files/7cli_B_protein.pdb
+  motif_only: True
+  motif_min_length: 331
+  motif_max_length: 331
+  segment_order: B
+  atom_selection_mode: "all_atom"
+7VUQ_B_NFKB2_HUMAN_H11MO_0_B:
+  contig_string: B1-296/35
+  motif_pdb_path: motif_benchmark_pdb_files/7vuq_B_protein.pdb
+  motif_only: True
+  motif_min_length: 331
+  motif_max_length: 331
+  segment_order: B
+  atom_selection_mode: "all_atom"
+7CLI_A_NFKB2_HUMAN_H11MO_0_B:
+  contig_string: A1-292/35
+  motif_pdb_path: motif_benchmark_pdb_files/7cli_A_protein.pdb
+  motif_only: True
+  motif_min_length: 327
+  motif_max_length: 327
+  segment_order: A
+  atom_selection_mode: "all_atom"
+7VUQ_A_NFKB2_HUMAN_H11MO_0_B:
+  contig_string: A1-296/35
+  motif_pdb_path: motif_benchmark_pdb_files/7vuq_A_protein.pdb
+  motif_only: True
+  motif_min_length: 331
+  motif_max_length: 331
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4L0Z_A_RUNX1_MOUSE_H11MO_0_A:
+  contig_string: A1-147/32
+  motif_pdb_path: motif_benchmark_pdb_files/4l0z_A_protein.pdb
+  motif_only: True
+  motif_min_length: 179
+  motif_max_length: 179
+  segment_order: A
+  atom_selection_mode: "all_atom"
+3WTU_A_RUNX1_MOUSE_H11MO_0_A:
+  contig_string: A1-118/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wtu_A_protein.pdb
+  motif_only: True
+  motif_min_length: 178
+  motif_max_length: 178
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1HJB_F_RUNX1_MOUSE_H11MO_0_A:
+  contig_string: F1-120/104
+  motif_pdb_path: motif_benchmark_pdb_files/1hjb_F_protein.pdb
+  motif_only: True
+  motif_min_length: 224
+  motif_max_length: 224
+  segment_order: F
+  atom_selection_mode: "all_atom"
+3WTS_F_RUNX1_MOUSE_H11MO_0_A:
+  contig_string: F1-118/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wts_F_protein.pdb
+  motif_only: True
+  motif_min_length: 178
+  motif_max_length: 178
+  segment_order: F
+  atom_selection_mode: "all_atom"
+3WTW_F_RUNX1_MOUSE_H11MO_0_A:
+  contig_string: F1-119/60
+  motif_pdb_path: motif_benchmark_pdb_files/3wtw_F_protein.pdb
+  motif_only: True
+  motif_min_length: 179
+  motif_max_length: 179
+  segment_order: F
+  atom_selection_mode: "all_atom"
+5KL4_A_WT1_HUMAN_H11MO_0_C:
+  contig_string: A1-90/40
+  motif_pdb_path: motif_benchmark_pdb_files/5kl4_A_protein.pdb
+  motif_only: True
+  motif_min_length: 130
+  motif_max_length: 130
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4R2P_A_WT1_HUMAN_H11MO_0_C:
+  contig_string: A1-89/20
+  motif_pdb_path: motif_benchmark_pdb_files/4r2p_A_protein.pdb
+  motif_only: True
+  motif_min_length: 109
+  motif_max_length: 109
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5KL4_D_WT1_HUMAN_H11MO_0_C:
+  contig_string: D1-86/40
+  motif_pdb_path: motif_benchmark_pdb_files/5kl4_D_protein.pdb
+  motif_only: True
+  motif_min_length: 126
+  motif_max_length: 126
+  segment_order: D
+  atom_selection_mode: "all_atom"
+5KL3_A_WT1_HUMAN_H11MO_0_C:
+  contig_string: A1-87/22
+  motif_pdb_path: motif_benchmark_pdb_files/5kl3_A_protein.pdb
+  motif_only: True
+  motif_min_length: 109
+  motif_max_length: 109
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6B0Q_A_WT1_HUMAN_H11MO_0_C:
+  contig_string: A1-119/52
+  motif_pdb_path: motif_benchmark_pdb_files/6b0q_A_protein.pdb
+  motif_only: True
+  motif_min_length: 171
+  motif_max_length: 171
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5VMU_A_KAISO_HUMAN_H11MO_0_A:
+  contig_string: A1-121/32
+  motif_pdb_path: motif_benchmark_pdb_files/5vmu_A_protein.pdb
+  motif_only: True
+  motif_min_length: 153
+  motif_max_length: 153
+  segment_order: A
+  atom_selection_mode: "all_atom"
+5VMV_A_KAISO_HUMAN_H11MO_0_A:
+  contig_string: A1-116/32
+  motif_pdb_path: motif_benchmark_pdb_files/5vmv_A_protein.pdb
+  motif_only: True
+  motif_min_length: 148
+  motif_max_length: 148
+  segment_order: A
+  atom_selection_mode: "all_atom"
+2LT7_A_MA0527_1:
+  contig_string: A1-133/38
+  motif_pdb_path: motif_benchmark_pdb_files/2lt7_A_protein.pdb
+  motif_only: True
+  motif_min_length: 171
+  motif_max_length: 171
+  segment_order: A
+  atom_selection_mode: "all_atom"
+4F6N_A_MA0527_1:
+  contig_string: A1-120/33
+  motif_pdb_path: motif_benchmark_pdb_files/4f6n_A_protein.pdb
+  motif_only: True
+  motif_min_length: 153
+  motif_max_length: 153
+  segment_order: A
+  atom_selection_mode: "all_atom"
+6DFC_A_MA0527_1:
+  contig_string: A1-117/36
+  motif_pdb_path: motif_benchmark_pdb_files/6dfc_A_protein.pdb
+  motif_only: True
+  motif_min_length: 153
+  motif_max_length: 153
+  segment_order: A
+  atom_selection_mode: "all_atom"
+1E3O_C_MA0785_1:
+  contig_string: C1-132/22
+  motif_pdb_path: motif_benchmark_pdb_files/1e3o_C_protein.pdb
+  motif_only: True
+  motif_min_length: 154
+  motif_max_length: 154
+  segment_order: C
+  atom_selection_mode: "all_atom"
