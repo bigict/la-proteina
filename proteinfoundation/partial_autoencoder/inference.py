@@ -19,6 +19,8 @@ from loguru import logger
 from sklearn.decomposition import PCA
 
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
+from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 
 COLORS_RT = [
     "#FF0000",  # Red
@@ -243,6 +245,33 @@ def get_df_stats(df):
     return pd.DataFrame(stats_data)
 
 
+def save_predictions(root_path, predictions):
+    logger.info(f"Saving PDBs we test on")
+
+    for i, (x_in, x_out) in enumerate(predictions):
+        for j in range(len(x_in["id"])):
+            pdb_id = x_in["id"][j]
+
+            mask = x_out["residue_mask"][j]
+            atom_mask = x_out["atom_mask"][j]
+
+            coors_atom37 = nm_to_ang(
+                x_out["coors_nm"][j] * mask[..., None, None] * atom_mask[..., None]
+            )  # [b, n, 37, 3]
+            residue_type = x_out["aatype_max"][j] * mask  # [n, 37, 3] and [n]
+
+            # Save generated structure as pdb
+            pdb_path = os.path.join(root_path, f"{pdb_id}_{i}_{j}.pdb")
+            write_prot_to_pdb(
+                prot_pos=coors_atom37.float().detach().cpu().numpy(),
+                aatype=residue_type.detach().cpu().numpy(),
+                file_path=pdb_path,
+                chain_index=None,
+                overwrite=True,
+                no_indexing=True,
+            )
+
+
 def main() -> None:
     load_dotenv()
 
@@ -281,6 +310,10 @@ def main() -> None:
 
     # Extract PDB ids
     pdb_id = extract_pdb_ids(predictions)  # List of strs
+
+    # Save predictions
+    if cfg.get("save_predictions", False):
+        save_predictions(root_path, predictions)
 
     # Plot requested stuff
     dir_storages = {}
