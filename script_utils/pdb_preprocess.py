@@ -61,9 +61,7 @@ def rearrange_pdb(
     residue_number_last = 0
     for i, (_, g) in enumerate(chains):
         residue_number_min = g["residue_number"].min()
-        residue_number_offset = (
-            residue_number_last + i * pseudo_linker_length
-        )
+        residue_number_offset = residue_number_last + pseudo_linker_length
         g["residue_number"] = g["residue_number"].apply(
             lambda x: x - residue_number_min + 1 + residue_number_offset
         )
