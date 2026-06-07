@@ -17,6 +17,7 @@ from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
 from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.loss_utils import token_level_w
 from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 
@@ -276,9 +277,7 @@ class AutoEncoder(L.LightningModule):
             self.compute_kl_penalty(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask * torch.where(
-                    ~is_na, self.cfg_ae.loss.kl.get("prot_w", 1.0), self.cfg_ae.loss.kl.get("na_w", 1.0)
-                ),
+                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
                 w=self.cfg_ae.loss.kl.weight * f,
             )
         )
@@ -324,9 +323,7 @@ class AutoEncoder(L.LightningModule):
             componentwise_kl = self._per_component_kl(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask * torch.where(
-                    ~is_na, self.cfg_ae.loss.kl.get("prot_w", 1.0), self.cfg_ae.loss.kl.get("na_w", 1.0)
-                ),
+                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
             )  # [b, n, d]
             self.log_tensor_statistics(
                 bs=bs,
@@ -394,12 +391,6 @@ class AutoEncoder(L.LightningModule):
             will not be used to compute the total loss, but will just be logged.
         """
 
-        aatype = batch["residue_type"]  # [b, n]
-        is_na = torch.logical_or(
-            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
-            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
-        )
-
         def reduce_37(
             err: Float[torch.Tensor, f"b n {rc.atom_type_num} 3"],
             mask: Bool[torch.Tensor, "b n"],
@@ -409,9 +400,7 @@ class AutoEncoder(L.LightningModule):
             nres = mask.sum(dim=-1)  # [b]
             nat = atom_mask.sum(dim=-1) * mask  # [b, n]
             err = torch.sum(err, dim=(-1, -2))  # [b, n]
-            err = err * torch.where(
-                ~is_na, self.cfg_ae.loss.struct.get("prot_w", 1.0), self.cfg_ae.loss.struct.get("na_w", 1.0)
-            )
+            err = err * token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             if mode == "mean":
                 err = err / nat  # Take mean over existing atoms if mode == "mean"
             err = err.sum(dim=-1) / nres  # [b]
@@ -489,11 +478,6 @@ class AutoEncoder(L.LightningModule):
         )  # [b, n] gets rid of -1 for padding (issue with cross entropy loss below)
 
         assert logits_pred.shape[-1] == rc.restype_num, "Wrong number of logits"
-        is_na = torch.logical_or(
-            (target_aa >= rc.dna_from_idx) & (target_aa <= rc.dna_to_idx),
-            (target_aa >= rc.rna_from_idx) & (target_aa <= rc.rna_to_idx)
-        )
-
 
         # Compute cross entropy
         b, n = mask.shape[0], mask.shape[1]
@@ -506,9 +490,7 @@ class AutoEncoder(L.LightningModule):
         )  # [b * n]
         seq_loss = seq_loss_flat.view(b, n)  # [b, n]
         seq_loss = seq_loss * mask  # [b, n]
-        seq_loss = seq_loss * torch.where(
-            ~is_na, self.cfg_ae.loss.seq.get("prot_w", 1.0), self.cfg_ae.loss.seq.get("na_w", 1.0)
-        )
+        seq_loss = seq_loss * token_level_w(target_aa, self.cfg_ae.loss.seq)
         seq_loss = torch.sum(seq_loss, dim=-1) / nres  # [b]
 
         # Compute seq recovery rate
