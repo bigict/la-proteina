@@ -293,6 +293,16 @@ class AutoEncoder(L.LightningModule):
             )
         )
 
+        # Structure smooth lddt
+        if self.cfg_ae.loss.get("lddt"):
+            losses.update(
+                self.compute_struct_lddt_loss(
+                    output_dec=output_dec,
+                    batch=batch,
+                    weight=self.cfg_ae.loss.lddt.weight,
+                )
+            )
+
         # Sequence loss
         losses.update(
             self.compute_seq_rec_loss(
@@ -361,6 +371,45 @@ class AutoEncoder(L.LightningModule):
         if val_step:
             return train_loss, output_dec
         return train_loss
+
+    def compute_struct_lddt_loss(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        weight: float = 1.0,
+    ) -> Dict[str, Float[Tensor, "b"]]:
+        coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
+        coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+        mask = output_dec["residue_mask"]  # [b, n] boolean
+        atom_mask_true = batch["coord_mask"] * mask[..., None]  # [b, n, 37] boolean
+
+        err = torch.abs(
+            torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
+        )  # [b, n, 37, 37]
+
+        losses = {}
+
+        # Compute RMSD in Å (without alignment)
+        err_ang = nm_to_ang(err)  # [b, n, 37, 37]
+
+
+        cdist_mask = mask[..., None, None] * (
+            atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
+        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
+        score = 0.25 * sum(
+            cdist_mask * torch.sigmoid(t - err) for t in (0.5, 1.0, 2.0, 4.0)
+        )  # [b, n, 37, 37]
+
+        reduce_dim = (-3, -2, -1)
+        w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
+        score = torch.sum(score * w[..., None, None], dim=reduce_dim) / (
+            torch.sum(cdist_mask * w[..., None, None], dim=reduce_dim) + 1e-9
+        )  # [b]
+
+        err = 1. - score
+        losses["struct_lddt"] = err * weight
+        losses["struct_lddt_justlog"] = err * weight
+        return losses
 
     def compute_struct_rec_loss(
         self,
