@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 from proteinfoundation.datasets.gen_dataset import GenDataset
 from proteinfoundation.proteina import Proteina
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
-from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
+from proteinfoundation.utils.pdb_utils import create_chain_index, write_prot_to_pdb
 
 
 def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
@@ -314,6 +314,7 @@ def save_motif_predictions(
     root_path: str,
     predictions: List[List[Tuple[torch.tensor]]],
     job_id: int = 0,
+    chain_indexes: np.ndarray = None,
     motif_pdb_name: str = None,
 ) -> None:
     predictions = [sample for sublist in predictions for sample in sublist]
@@ -322,6 +323,10 @@ def save_motif_predictions(
     for j, pred in enumerate(predictions):
         coors_atom37, residue_type = pred  # [n, 37, 3] and [n]
         n = coors_atom37.shape[-3]
+        if chain_indexes:
+            chain_index = chain_indexes[j].numpy()
+        else:
+            chain_index = None
         dir_name = f"job_{job_id}_id_{j}_motif_{motif_pdb_name}"
         samples_per_length[n] += 1
         sample_root_path = os.path.join(root_path, dir_name)
@@ -332,6 +337,7 @@ def save_motif_predictions(
             prot_pos=coors_atom37.float().detach().cpu().numpy(),
             aatype=residue_type.detach().cpu().numpy(),
             file_path=pdb_path,
+            chain_index=chain_index,
             overwrite=True,
             no_indexing=True,
         )
@@ -415,12 +421,16 @@ def main():
     predictions = trainer.predict(model, dataloader)
 
     chain_indexes = None
+    pseudo_linker_length=dataset.get("pseudo_linker_length", 0)
+    if pseudo_linker_length > 0:
+        pass  # TODO: make chain_indexes here
 
     if motif_cond or ("motif_task_name" in cfg.generation.dataset):
         save_motif_predictions(
             root_path,
             predictions,
             job_id=args.job_id,
+            chain_indexes=chain_indexes,
             motif_pdb_name=cfg_gen.dataset.get("motif_task_name", None),
         )
         import shutil

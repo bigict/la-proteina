@@ -20,7 +20,7 @@ from sklearn.decomposition import PCA
 
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import nm_to_ang
-from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
+from proteinfoundation.utils.pdb_utils import create_chain_index, write_prot_to_pdb
 
 COLORS_RT = [
     "#FF0000",  # Red
@@ -245,7 +245,7 @@ def get_df_stats(df):
     return pd.DataFrame(stats_data)
 
 
-def save_predictions(root_path, predictions):
+def save_predictions(root_path, predictions, pseudo_linker_length=0):
     logger.info(f"Saving PDBs we test on")
 
     for i, (x_in, x_out) in enumerate(predictions):
@@ -260,13 +260,19 @@ def save_predictions(root_path, predictions):
             )  # [b, n, 37, 3]
             residue_type = x_out["aatype_max"][j] * mask  # [n, 37, 3] and [n]
 
+            chain_index = None
+            if "residue_pdb_idx" in x_in and pseudo_linker_length > 0:
+                chain_index = create_chain_index(
+                    x_in["residue_pdb_idx"][j].detach().cpu().numpy(), pseudo_linker_length
+                )
+
             # Save generated structure as pdb
             pdb_path = os.path.join(root_path, f"{pdb_id}_{i}_{j}.pdb")
             write_prot_to_pdb(
                 prot_pos=coors_atom37.float().detach().cpu().numpy(),
                 aatype=residue_type.detach().cpu().numpy(),
                 file_path=pdb_path,
-                chain_index=None,
+                chain_index=chain_index,
                 overwrite=True,
                 no_indexing=True,
             )
@@ -313,7 +319,11 @@ def main() -> None:
 
     # Save predictions
     if cfg.get("save_predictions", False):
-        save_predictions(root_path, predictions)
+        save_predictions(
+            root_path,
+            predictions,
+            pseudo_linker_length=cfg.dataset.get("pseudo_linker_length", 0)
+        )
 
     # Plot requested stuff
     dir_storages = {}

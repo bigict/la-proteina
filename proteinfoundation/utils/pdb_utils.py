@@ -56,6 +56,17 @@ PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)  # := 62.
 
 
+def create_chain_index(
+    residue_index: np.ndarray, pseudo_linker_length: int = 0
+) -> np.array:
+    if pseudo_linker_length > 0:
+        chain_index = np.cumsum(
+            (residue_index[..., 1:] - residue_index[..., :-1]) >= pseudo_linker_length
+        )
+        return np.concatenate((np.zeros(chain_index.shape[:-1] + (1,)), chain_index))
+    return np.zeros(residue_index.shape)
+
+
 def create_full_prot(
     atom37: np.ndarray,
     atom37_mask: np.ndarray,
