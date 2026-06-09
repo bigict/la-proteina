@@ -389,7 +389,7 @@ class AutoEncoder(L.LightningModule):
 
         losses = {}
 
-        # Compute RMSD in Å (without alignment)
+        # Convert pairwise distance error to Å for SmoothLDDT thresholds
         err_ang = nm_to_ang(err)  # [b, n, 37, 37]
 
 
@@ -397,7 +397,7 @@ class AutoEncoder(L.LightningModule):
             atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
         ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
         score = 0.25 * sum(
-            cdist_mask * torch.sigmoid(t - err) for t in (0.5, 1.0, 2.0, 4.0)
+            cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
         )  # [b, n, 37, 37]
 
         reduce_dim = (-3, -2, -1)
