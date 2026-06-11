@@ -13,7 +13,6 @@ from torch_scatter import scatter_mean
 
 from openfold.data import data_transforms
 from openfold.np import residue_constants as rc
-from openfold.np.residue_constants import atom_types
 from openfold.utils.feats import atom_gather, pseudo_residue_type
 from proteinfoundation.utils.angle_utils import bond_angles, signed_dihedral_angle
 from proteinfoundation.utils.fold_utils import extract_cath_code_by_level
@@ -848,15 +847,49 @@ class BackboneTorsionAnglesSeqFeat(Feature):
         )  # [b, n-1]
         phi = signed_dihedral_angle(
             C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :], C[:, 1:, :]
-        )  # [b, n-1]
-        bb_angles = torch.stack([psi, omega, phi], dim=-1)  # [b, n-1, 3]
+        )
+        good_pair = idx[:, 1:] - idx[:, :-1] == 1
+        prot_pair_mask = (~is_na[:, :-1]) & (~is_na[:, 1:]) & good_pair
+        prot_angles = torch.stack(
+            [psi * prot_pair_mask, omega * prot_pair_mask, phi * prot_pair_mask], dim=-1
+        )
+        zero_pad = torch.zeros(
+            (a37.shape[0], 1, 3), dtype=prot_angles.dtype, device=prot_angles.device
+        )
+        prot_angles = torch.cat([prot_angles, zero_pad], dim=1)
 
-        good_pair = idx[:, 1:] - idx[:, :-1] == 1  # boolean [b, n-1]
-        bb_angles = bb_angles * good_pair[..., None]  # [b, n-1, 3]
+        c4 = a37[:, :, rc.atom_order["C4\'"], :]
+        c3 = a37[:, :, rc.atom_order["C3\'"], :]
+        o3 = a37[:, :, rc.atom_order["O3\'"], :]
+        p = a37[:, :, rc.atom_order["P"], :]
+        o5 = a37[:, :, rc.atom_order["O5\'"], :]
+        c5 = a37[:, :, rc.atom_order["C5\'"], :]
 
-        zero_pad = torch.zeros((a37.shape[0], 1, 3), device=bb_angles.device)
-        bb_angles = torch.cat([bb_angles, zero_pad], dim=1)  # [b, n, 3]
-        return bb_angles
+        na_pair_mask = is_na[:, :-1] & is_na[:, 1:] & good_pair
+        # Keep the protein slot semantics: psi-like, omega-like, phi-like.
+        zeta = signed_dihedral_angle(
+            c3[:, :-1, :], o3[:, :-1, :], p[:, 1:, :], o5[:, 1:, :]
+        )
+        alpha_next = signed_dihedral_angle(
+            o3[:, :-1, :], p[:, 1:, :], o5[:, 1:, :], c5[:, 1:, :]
+        )
+        epsilon = signed_dihedral_angle(
+            c4[:, :-1, :], c3[:, :-1, :], o3[:, :-1, :], p[:, 1:, :]
+        )
+        na_angles = torch.stack(
+            [
+                zeta * na_pair_mask,
+                alpha_next * na_pair_mask,
+                epsilon * na_pair_mask,
+            ],
+            dim=-1,
+        )
+        zero_pad = torch.zeros(
+            (a37.shape[0], 1, 3), dtype=na_angles.dtype, device=na_angles.device
+        )
+        na_angles = torch.cat([na_angles, zero_pad], dim=1)
+
+        return torch.where(is_na[..., None], na_angles, prot_angles)
 
 
 class BackboneBondAnglesSeqFeat(Feature):
@@ -882,8 +915,6 @@ class BackboneBondAnglesSeqFeat(Feature):
 
     def _get_bb_bond_angles(self, batch):
         a37 = batch["coords"]  # [b, n, 37, 3]
-        mask = batch["mask_dict"]["coords"][..., 0, 0]  # [b, n]
-
         if "residue_pdb_idx" in batch and batch["residue_pdb_idx"] is not None:
             idx = batch["residue_pdb_idx"]  # [b, n]
         else:
@@ -922,16 +953,30 @@ class BackboneBondAnglesSeqFeat(Feature):
 
         # Account for chain breaks in theta_2 and theta_3
         good_pair = idx[:, 1:] - idx[:, :-1] == 1  # boolean [b, n-1]
-        theta_2 = theta_2 * good_pair  # [b, n-1]
-        theta_3 = theta_3 * good_pair  # [b, n-1]
+        prot_mask = ~is_na
+        theta_1 = theta_1 * prot_mask
+        theta_2 = theta_2 * (good_pair & prot_mask[:, :-1] & prot_mask[:, 1:])
+        theta_3 = theta_3 * (good_pair & prot_mask[:, :-1] & prot_mask[:, 1:])
 
         # Add a zero at the end of theta_2 and theta_3 to get shape [b, n]
         zero_pad = torch.zeros((b, 1), device=theta_2.device)  # [b, 1]
         theta_2 = torch.cat([theta_2, zero_pad], dim=-1)  # [b, n]
         theta_3 = torch.cat([theta_3, zero_pad], dim=-1)  # [b, n]
 
-        bb_angles = torch.stack([theta_1, theta_2, theta_3], dim=-1)  # [b, n, 3]
-        return bb_angles
+        prot_angles = torch.stack([theta_1, theta_2, theta_3], dim=-1)
+
+        op1 = a37[:, :, rc.atom_order["OP1"], :]
+        p = a37[:, :, rc.atom_order["P"], :]
+        o5 = a37[:, :, rc.atom_order["O5\'"], :]
+        c5 = a37[:, :, rc.atom_order["C5\'"], :]
+        c4 = a37[:, :, rc.atom_order["C4\'"], :]
+
+        na_theta_1 = bond_angles(op1, p, o5)
+        na_theta_2 = bond_angles(p, o5, c5)
+        na_theta_3 = bond_angles(o5, c5, c4)
+        na_angles = torch.stack([na_theta_1, na_theta_2, na_theta_3], dim=-1) * is_na[..., None]
+
+        return torch.where(is_na[..., None], na_angles, prot_angles)
 
 
 class OpenfoldSideChainAnglesSeqFeat(Feature):
@@ -1047,12 +1092,17 @@ class MotifRelativeCoordsSeqFeat(Feature):
 
     def forward(self, batch):
         if "x_motif" in batch and "motif_mask" in batch and "seq_motif_mask" in batch:
-            required_atoms = torch.tensor(
-                [atom_types.index("CA")], device=batch["motif_mask"].device
-            )  # CA
-            has_required_atoms = torch.all(
-                batch["motif_mask"][:, :, required_atoms], dim=-1
-            )  # [batch, seq_len]
+            aatype = batch.get("seq_motif", batch.get("residue_type"))
+            is_na = torch.logical_or(
+                (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+                (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+            )
+            anchor_idx = torch.where(
+                ~is_na,
+                torch.full_like(aatype, rc.atom_order["CA"]),
+                torch.full_like(aatype, rc.atom_order["P"]),
+            )
+            has_required_atoms = atom_gather(batch["motif_mask"], anchor_idx, -1).bool()
             relevant_has_required_atoms = torch.where(
                 batch["seq_motif_mask"],
                 has_required_atoms,
@@ -1115,7 +1165,7 @@ class MotifSideChainAnglesSeqFeat(Feature):
     """Computes side chain angles feature from motif."""
 
     def __init__(self, **kwargs):
-        super().__init__(dim=88)  # 4 * 21 + 4 for side chain angles
+        super().__init__(dim=int(rc.chi_angles_num * 21 + rc.chi_angles_num))
         self._has_logged = False
 
     def forward(self, batch):
@@ -1141,40 +1191,15 @@ class MotifTorsionAnglesSeqFeat(Feature):
     """Computes torsion angles feature from motif."""
 
     def __init__(self, **kwargs):
-        super().__init__(dim=63)  # 3 * 21 for torsion angles
+        super().__init__(dim=BackboneTorsionAnglesSeqFeat().dim)
         self._has_logged = False
 
     def forward(self, batch):
         if "x_motif" in batch and "motif_mask" in batch and "seq_motif_mask" in batch:
-            backbone_atoms = torch.tensor(
-                [
-                    atom_types.index("N"),
-                    atom_types.index("CA"),
-                    atom_types.index("C"),
-                    atom_types.index("O"),
-                ],
-                device=batch["motif_mask"].device,
-            )
-            motif_mask_per_residue_backbone = torch.any(
-                batch["motif_mask"][:, :, backbone_atoms], dim=-1
-            )  # [batch, seq_len]
-            relevant_motif_mask = torch.where(
-                batch["seq_motif_mask"],
-                motif_mask_per_residue_backbone,
-                torch.ones_like(motif_mask_per_residue_backbone, dtype=torch.bool),
-            )
-            if not torch.all(relevant_motif_mask):
-                if not self._has_logged:
-                    logger.warning(
-                        "Missing backbone atoms in motif region, returning zeros"
-                    )
-                    self._has_logged = True
-                b, n = self.extract_bs_and_n(batch)
-                device = self.extract_device(batch)
-                return torch.zeros(b, n, self.dim, device=device)
-
             batch_torsion_angles = {
+                "residue_type": batch["seq_motif"],
                 "coords": batch["x_motif"],
+                "coord_mask": batch["motif_mask"],
                 "residue_pdb_idx": batch.get("residue_pdb_idx", None),
             }
             return BackboneTorsionAnglesSeqFeat()(batch_torsion_angles)
@@ -2110,4 +2135,3 @@ class FeatureFactoryUidxMotif(torch.nn.Module):
         feat, feat_mask = self.feat_creator(batch)  # [b, n_motif, dim_f], [b, n_motif]
         feat_proc = self.ln_out(self.linear_out(feat))  # [b, n_motif, dim_f]
         return feat_proc * feat_mask[..., None], feat_mask
-

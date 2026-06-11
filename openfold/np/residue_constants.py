@@ -220,11 +220,11 @@ chi_angles_mask = [
 ]
 if DNA in restype_list:
     chi_angles_mask = chi_angles_mask + [
-        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],       #  DA
-        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],       #  DC
-        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],       #  DG
-        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],       #  DT
-        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0],       #  DX
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #  DA
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #  DC
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #  DG
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  #  DT
+        [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0],  #  DX
     ]
 if RNA in restype_list:
     chi_angles_mask = chi_angles_mask + [
@@ -262,15 +262,14 @@ chi_pi_periodic = [
     [0.0, 0.0, 0.0, 0.0],  # TRP
     [0.0, 1.0, 0.0, 0.0],  # TYR
     [0.0, 0.0, 0.0, 0.0],  # VAL
-    [0.0, 0.0, 0.0, 0.0],  # UNK
 ]
 if DNA in restype_list:
     chi_pi_periodic = chi_pi_periodic + [
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     ]
 if RNA in restype_list:
     chi_pi_periodic = chi_pi_periodic + [
@@ -280,6 +279,7 @@ if RNA in restype_list:
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     ]
+chi_pi_periodic.append([0.0] * chi_angles_num)  # UNK
 chi_pi_periodic = [
     m + [0.0] * (chi_angles_num - len(m)) for m in chi_pi_periodic
 ]
@@ -2030,31 +2030,36 @@ def _make_restype_atom14_is_ambiguous():
   return restype_atom14_is_ambiguous
 
 
-def _make_restype_rigidgroup_base_atom37_idx():
-  """Create Map from rigidgroups to atom37 indices."""
-  # Create an array with the atom names.
-  # shape (num_restypes, num_rigidgroups, 3_atoms): (21, 8, 3)
-  base_atom_names = np.full([restype_num + 1, restype_rigid_group_num, 3], '', dtype=object)
+def _make_restype_rigidgroup_base_atom_names():
+  base_atom_names = np.full(
+      [restype_num + 1, restype_rigid_group_num, 3], '', dtype=object
+  )
 
-  # 0: backbone frame
-  base_atom_names[:, 0, :] = ['C', 'CA', 'N']
-
-  # 3: 'psi-group'
-  base_atom_names[:, 3, :] = ['CA', 'C', 'O']
-
-  # 4,5,6,7: 'chi1,2,3,4-group'
   for restype, restype_letter in enumerate(restypes):
+    if moltype(restype) == PROT:
+      base_atom_names[restype, 0, :] = ['C', 'CA', 'N']
+      base_atom_names[restype, 3, :] = ['CA', 'C', 'O']
+    else:
+      base_atom_names[restype, 0, :] = ['OP1', 'P', 'O5\'']
+
     resname = restype_1to3[(restype_letter, moltype(restype))]
     for chi_idx in range(chi_angles_num):
       if chi_angles_mask[restype][chi_idx]:
         atom_names = chi_angles_atoms[resname][chi_idx]
         base_atom_names[restype, chi_idx + 4, :] = atom_names[1:]
 
+  base_atom_names[unk_restype_index, 0, :] = ['C', 'CA', 'N']
+  base_atom_names[unk_restype_index, 3, :] = ['CA', 'C', 'O']
+  return base_atom_names
+
+
+def _make_restype_rigidgroup_base_atom37_idx():
+  """Create Map from rigidgroups to atom37 indices."""
   # Translate atom names into atom37 indices.
   lookuptable = atom_order.copy()
   lookuptable[''] = 0
   restype_rigidgroup_base_atom37_idx = np.vectorize(lambda x: lookuptable[x])(
-      base_atom_names)
+      _make_restype_rigidgroup_base_atom_names())
   return restype_rigidgroup_base_atom37_idx
 
 
@@ -2070,5 +2075,8 @@ RESTYPE_RIGIDGROUP_BASE_ATOM37_IDX = _make_restype_rigidgroup_base_atom37_idx()
 # Create mask for existing rigid groups.
 RESTYPE_RIGIDGROUP_MASK = np.zeros([restype_num + 1, restype_rigid_group_num], dtype=np.float32)
 RESTYPE_RIGIDGROUP_MASK[:, 0] = 1
-RESTYPE_RIGIDGROUP_MASK[:, 3] = 1
+for restype in range(restype_num):
+    if moltype(restype) == PROT:
+        RESTYPE_RIGIDGROUP_MASK[restype, 3] = 1
+RESTYPE_RIGIDGROUP_MASK[unk_restype_index, 3] = 1
 RESTYPE_RIGIDGROUP_MASK[:restype_num, 4:] = chi_angles_mask

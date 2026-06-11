@@ -779,38 +779,12 @@ def atom37_to_frames(protein, eps=1e-8):
     restype_num = rc.restype_num + 1
     rigidgroup_num = rc.restype_rigid_group_num
 
-    restype_rigidgroup_base_atom_names = np.full(
-        [restype_num, rigidgroup_num, 3], "", dtype=object
-    )
-    restype_rigidgroup_base_atom_names[:, 0, :] = ["C", "CA", "N"]
-    restype_rigidgroup_base_atom_names[:, 3, :] = ["CA", "C", "O"]
-
-    for restype, restype_letter in enumerate(rc.restypes):
-        resname = rc.restype_1to3[(restype_letter, rc.moltype(restype))]
-        for chi_idx in range(rc.chi_angles_num):
-            if rc.chi_angles_mask[restype][chi_idx]:
-                names = rc.chi_angles_atoms[resname][chi_idx]
-                restype_rigidgroup_base_atom_names[
-                    restype, chi_idx + 4, :
-                ] = names[1:]
-
-    restype_rigidgroup_mask = all_atom_mask.new_zeros(
-        (*aatype.shape[:-1], restype_num, rigidgroup_num),
-    )
-    restype_rigidgroup_mask[..., 0] = 1
-    restype_rigidgroup_mask[..., 3] = 1
-    restype_rigidgroup_mask[..., :rc.restype_num, 4:] = all_atom_mask.new_tensor(
-        rc.chi_angles_mask
-    )
-
-    lookuptable = rc.atom_order.copy()
-    lookuptable[""] = 0
-    lookup = np.vectorize(lambda x: lookuptable[x])
-    restype_rigidgroup_base_atom37_idx = lookup(
-        restype_rigidgroup_base_atom_names,
+    restype_rigidgroup_mask = all_atom_mask.new_tensor(rc.RESTYPE_RIGIDGROUP_MASK)
+    restype_rigidgroup_mask = restype_rigidgroup_mask.view(
+        *((1,) * batch_dims), *restype_rigidgroup_mask.shape
     )
     restype_rigidgroup_base_atom37_idx = aatype.new_tensor(
-        restype_rigidgroup_base_atom37_idx,
+        rc.RESTYPE_RIGIDGROUP_BASE_ATOM37_IDX,
     )
     restype_rigidgroup_base_atom37_idx = (
         restype_rigidgroup_base_atom37_idx.view(
