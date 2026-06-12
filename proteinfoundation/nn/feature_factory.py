@@ -822,22 +822,10 @@ class BackboneTorsionAnglesSeqFeat(Feature):
             (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
             (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
         )
-        n_idx = torch.where(
-            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
-        )
-        ca_idx = torch.where(
-            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
-        )
-        c_idx = torch.where(
-            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
-        )
 
-        # N = a37[:, :, 0, :]  # [b, n, 3]
-        N = atom_gather(a37, n_idx, -2)
-        # CA = a37[:, :, 1, :]  # [b, n, 3]
-        CA = atom_gather(a37, ca_idx, -2)
-        # C = a37[:, :, 2, :]  # [b, n, 3]
-        C = atom_gather(a37, c_idx, -2)
+        N = a37[:, :, 0, :]  # [b, n, 3]
+        CA = a37[:, :, 1, :]  # [b, n, 3]
+        C = a37[:, :, 2, :]  # [b, n, 3]
 
         psi = signed_dihedral_angle(
             N[:, :-1, :], CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :]
@@ -847,49 +835,34 @@ class BackboneTorsionAnglesSeqFeat(Feature):
         )  # [b, n-1]
         phi = signed_dihedral_angle(
             C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :], C[:, 1:, :]
-        )
-        good_pair = idx[:, 1:] - idx[:, :-1] == 1
-        prot_pair_mask = (~is_na[:, :-1]) & (~is_na[:, 1:]) & good_pair
-        prot_angles = torch.stack(
-            [psi * prot_pair_mask, omega * prot_pair_mask, phi * prot_pair_mask], dim=-1
-        )
-        zero_pad = torch.zeros(
-            (a37.shape[0], 1, 3), dtype=prot_angles.dtype, device=prot_angles.device
-        )
-        prot_angles = torch.cat([prot_angles, zero_pad], dim=1)
+        )  # [b, n-1]
+        bb_angles = torch.stack([psi, omega, phi], dim=-1)  # [b, n-1, 3]
 
-        c4 = a37[:, :, rc.atom_order["C4\'"], :]
-        c3 = a37[:, :, rc.atom_order["C3\'"], :]
-        o3 = a37[:, :, rc.atom_order["O3\'"], :]
-        p = a37[:, :, rc.atom_order["P"], :]
-        o5 = a37[:, :, rc.atom_order["O5\'"], :]
-        c5 = a37[:, :, rc.atom_order["C5\'"], :]
+        if torch.any(is_na):
+            C4p = a37[:, :, rc.atom_order["C4\'"], :]  # [b, n, 3]
+            C3p = a37[:, :, rc.atom_order["C3\'"], :]  # [b, n, 3]
+            O3p = a37[:, :, rc.atom_order["O3\'"], :]  # [b, n, 3]
+            P   = a37[:, :, rc.atom_order["P"   ], :]  # [b, n, 3]
+            O5p = a37[:, :, rc.atom_order["O5\'"], :]  # [b, n, 3]
 
-        na_pair_mask = is_na[:, :-1] & is_na[:, 1:] & good_pair
-        # Keep the protein slot semantics: psi-like, omega-like, phi-like.
-        zeta = signed_dihedral_angle(
-            c3[:, :-1, :], o3[:, :-1, :], p[:, 1:, :], o5[:, 1:, :]
-        )
-        alpha_next = signed_dihedral_angle(
-            o3[:, :-1, :], p[:, 1:, :], o5[:, 1:, :], c5[:, 1:, :]
-        )
-        epsilon = signed_dihedral_angle(
-            c4[:, :-1, :], c3[:, :-1, :], o3[:, :-1, :], p[:, 1:, :]
-        )
-        na_angles = torch.stack(
-            [
-                zeta * na_pair_mask,
-                alpha_next * na_pair_mask,
-                epsilon * na_pair_mask,
-            ],
-            dim=-1,
-        )
-        zero_pad = torch.zeros(
-            (a37.shape[0], 1, 3), dtype=na_angles.dtype, device=na_angles.device
-        )
-        na_angles = torch.cat([na_angles, zero_pad], dim=1)
+            epsilon = signed_dihedral_angle(
+                C4p[:, :-1, :], C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :]
+            )  # [b, n-1]
+            zeta = signed_dihedral_angle(
+                C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :], O5p[:, 1:, :]
+            )  # [b, n-1]
+            bb_angles = torch.where(
+                ~is_na[..., :-1, None],
+                bb_angles,
+                torch.stack([zeta, torch.zeros_like(zeta), epsilon], dim=-1)
+            )  # [b, n-1, 3]
 
-        return torch.where(is_na[..., None], na_angles, prot_angles)
+        good_pair = idx[:, 1:] - idx[:, :-1] == 1  # boolean [b, n-1]
+        bb_angles = bb_angles * good_pair[..., None]  # [b, n-1, 3]
+
+        zero_pad = torch.zeros((a37.shape[0], 1, 3), device=bb_angles.device)
+        bb_angles = torch.cat([bb_angles, zero_pad], dim=1)  # [b, n, 3]
+        return bb_angles
 
 
 class BackboneBondAnglesSeqFeat(Feature):
@@ -931,52 +904,47 @@ class BackboneBondAnglesSeqFeat(Feature):
             (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
             (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
         )
-        n_idx = torch.where(
-            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
-        )
-        ca_idx = torch.where(
-            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
-        )
-        c_idx = torch.where(
-            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
-        )
 
-        # N = a37[:, :, 0, :]  # [b, n, 3]
-        N = atom_gather(a37, n_idx, -2)
-        # CA = a37[:, :, 1, :]  # [b, n, 3]
-        CA = atom_gather(a37, ca_idx, -2)
-        # C = a37[:, :, 2, :]  # [b, n, 3]
-        C = atom_gather(a37, c_idx, -2)
+        N = a37[:, :, 0, :]  # [b, n, 3]
+        CA = a37[:, :, 1, :]  # [b, n, 3]
+        C = a37[:, :, 2, :]  # [b, n, 3]
         theta_1 = bond_angles(N[:, :, :], CA[:, :, :], C[:, :, :])  # [b, n]
         theta_2 = bond_angles(CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :])  # [b, n-1]
         theta_3 = bond_angles(C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :])  # [b, n-1]
 
         # Account for chain breaks in theta_2 and theta_3
         good_pair = idx[:, 1:] - idx[:, :-1] == 1  # boolean [b, n-1]
-        prot_mask = ~is_na
-        theta_1 = theta_1 * prot_mask
-        theta_2 = theta_2 * (good_pair & prot_mask[:, :-1] & prot_mask[:, 1:])
-        theta_3 = theta_3 * (good_pair & prot_mask[:, :-1] & prot_mask[:, 1:])
+        theta_2 = theta_2 * good_pair  # [b, n-1]
+        theta_3 = theta_3 * good_pair  # [b, n-1]
 
         # Add a zero at the end of theta_2 and theta_3 to get shape [b, n]
         zero_pad = torch.zeros((b, 1), device=theta_2.device)  # [b, 1]
         theta_2 = torch.cat([theta_2, zero_pad], dim=-1)  # [b, n]
         theta_3 = torch.cat([theta_3, zero_pad], dim=-1)  # [b, n]
 
-        prot_angles = torch.stack([theta_1, theta_2, theta_3], dim=-1)
+        bb_angles = torch.stack([theta_1, theta_2, theta_3], dim=-1)  # [b, n, 3]
+        if torch.any(is_na):
+            OP1 = a37[:, :, rc.atom_order["OP1" ], :]
+            P   = a37[:, :, rc.atom_order["P"   ], :]
+            OP2 = a37[:, :, rc.atom_order["OP2" ], :]
+            C3p = a37[:, :, rc.atom_order["C3\'"], :]
+            O3p = a37[:, :, rc.atom_order["O3\'"], :]
 
-        op1 = a37[:, :, rc.atom_order["OP1"], :]
-        p = a37[:, :, rc.atom_order["P"], :]
-        o5 = a37[:, :, rc.atom_order["O5\'"], :]
-        c5 = a37[:, :, rc.atom_order["C5\'"], :]
-        c4 = a37[:, :, rc.atom_order["C4\'"], :]
+            theta_x = bond_angles(O3p[:, :-1, :], P[:, 1:, :], OP1[:, 1:, :])   # [b, n-1]
+            theta_y = bond_angles(O3p[:, :-1, :], P[:, 1:, :], OP2[:, 1:, :])   # [b, n-1]
+            theta_z = bond_angles(C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :])  # [b, n-1]
 
-        na_theta_1 = bond_angles(op1, p, o5)
-        na_theta_2 = bond_angles(p, o5, c5)
-        na_theta_3 = bond_angles(o5, c5, c4)
-        na_angles = torch.stack([na_theta_1, na_theta_2, na_theta_3], dim=-1) * is_na[..., None]
+            theta_x = torch.cat([theta_x, zero_pad], dim=-1)  # [b, n]
+            theta_y = torch.cat([theta_y, zero_pad], dim=-1)  # [b, n]
+            theta_z = torch.cat([theta_z, zero_pad], dim=-1)  # [b, n]
 
-        return torch.where(is_na[..., None], na_angles, prot_angles)
+            bb_angles = torch.where(
+                ~is_na[..., None],
+                bb_angles,
+                torch.stack([theta_x, theta_y, theta_z], dim=-1)
+            )
+
+        return bb_angles
 
 
 class OpenfoldSideChainAnglesSeqFeat(Feature):
@@ -1118,7 +1086,7 @@ class MotifRelativeCoordsSeqFeat(Feature):
                 device = self.extract_device(batch)
                 return torch.zeros(b, n, self.dim, device=device)
             batch_coors = {
-                "residue_type": batch["residue_type"],
+                "residue_type": aatype,
                 "coords_nm": batch["x_motif"],
                 "coord_mask": batch["motif_mask"],
             }

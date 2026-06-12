@@ -970,86 +970,83 @@ def atom37_to_torsion_angles(
         (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
     )
 
-    n_idx = torch.where(
-        ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
-    )
-    ca_idx = torch.where(
-        ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
-    )
-    c_idx = torch.where(
-        ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
-    )
-    o_idx = torch.where(
-        ~is_na, rc.atom_order["O"], rc.atom_order.get("O5\'", rc.atom_order["O"])
-    )
-
-    pre_omega_atom_pos = torch.stack(
-        [
-            atom_gather(prev_all_atom_positions, ca_idx, -2),
-            atom_gather(prev_all_atom_positions, c_idx, -2),
-            atom_gather(all_atom_positions, n_idx, -2),
-            atom_gather(all_atom_positions, ca_idx, -2),
-        ],
+    pre_omega_atom_pos = torch.cat(
+        [prev_all_atom_positions[..., 1:3, :], all_atom_positions[..., :2, :]],
         dim=-2,
     )
-    phi_atom_pos = torch.stack(
-        [
-            atom_gather(prev_all_atom_positions, c_idx, -2),
-            atom_gather(all_atom_positions, n_idx, -2),
-            atom_gather(all_atom_positions, ca_idx, -2),
-            atom_gather(all_atom_positions, c_idx, -2),
-        ],
+    phi_atom_pos = torch.cat(
+        [prev_all_atom_positions[..., 2:3, :], all_atom_positions[..., :3, :]],
         dim=-2,
     )
-    psi_atom_pos = torch.stack(
-        [
-            atom_gather(all_atom_positions, n_idx, -2),
-            atom_gather(all_atom_positions, ca_idx, -2),
-            atom_gather(all_atom_positions, c_idx, -2),
-            atom_gather(all_atom_positions, o_idx, -2),
-        ],
+    psi_atom_pos = torch.cat(
+        [all_atom_positions[..., :3, :], all_atom_positions[..., 4:5, :]],
         dim=-2,
     )
 
     pre_omega_mask = torch.prod(
-        torch.stack(
-            [
-                atom_gather(prev_all_atom_mask, ca_idx, -1),
-                atom_gather(prev_all_atom_mask, c_idx, -1),
-            ],
-            dim=-1
-        ), dim=-1
-    ) * torch.prod(
-        torch.stack(
-            [
-                atom_gather(all_atom_mask, n_idx, -1),
-                atom_gather(all_atom_mask, ca_idx, -1),
-            ],
-            dim=-1
-        ), dim=-1
-    )
-    phi_mask = atom_gather(prev_all_atom_mask, c_idx, -1) * torch.prod(
-        torch.stack(
-            [
-                atom_gather(all_atom_mask, n_idx, -1),
-                atom_gather(all_atom_mask, ca_idx, -1),
-                atom_gather(all_atom_mask, c_idx, -1),
-            ],
-            dim=-1
-        ), dim=-1
+        prev_all_atom_mask[..., 1:3], dim=-1
+    ) * torch.prod(all_atom_mask[..., :2], dim=-1)
+    phi_mask = prev_all_atom_mask[..., 2] * torch.prod(
+        all_atom_mask[..., :3], dim=-1, dtype=all_atom_mask.dtype
     )
     psi_mask = (
-        torch.prod(
+        torch.prod(all_atom_mask[..., :3], dim=-1, dtype=all_atom_mask.dtype)
+        * all_atom_mask[..., 4]
+    )
+
+    if torch.any(is_na):
+        # zeta => psi, epsilon => phi
+        epsilon_atom_pos = torch.stack(
+            [
+                prev_all_atom_positions[..., rc.atom_order["C4\'"], :],
+                prev_all_atom_positions[..., rc.atom_order["C3\'"], :],
+                prev_all_atom_positions[..., rc.atom_order["O3\'"], :],
+                all_atom_positions[..., rc.atom_order["P"], :],
+            ],
+            dim=-2,
+        )
+        phi_atom_pos = torch.where(~is_na[..., None, None], phi_atom_pos, epsilon_atom_pos)
+
+        zeta_atom_pos = torch.stack(
+            [
+                prev_all_atom_positions[..., rc.atom_order["C3\'"], :],
+                prev_all_atom_positions[..., rc.atom_order["O3\'"], :],
+                all_atom_positions[..., rc.atom_order["P"], :],
+                all_atom_positions[..., rc.atom_order["O5\'"], :],
+            ],
+            dim=-2,
+        )
+        psi_atom_pos = torch.where(~is_na[..., None, None], psi_atom_pos, zeta_atom_pos)
+
+        epsilon_mask = torch.prod(
             torch.stack(
                 [
-                    atom_gather(all_atom_mask, n_idx, -1),
-                    atom_gather(all_atom_mask, ca_idx, -1),
-                    atom_gather(all_atom_mask, c_idx, -1),
+                    prev_all_atom_mask[..., rc.atom_order["C4\'"]],
+                    prev_all_atom_mask[..., rc.atom_order["C3\'"]],
+                    prev_all_atom_mask[..., rc.atom_order["O3\'"]],
+                    all_atom_mask[..., rc.atom_order["P"]],
                 ],
-                dim=-1
-            ), dim=-1
-        ) * atom_gather(all_atom_mask, o_idx, -1)
-    )
+                dim=-1,
+            ),
+            dim=-1,
+            dtype=all_atom_mask.dtype,
+        )
+        phi_mask = torch.where(~is_na, phi_mask, epsilon_mask)
+
+        zeta_mask = torch.prod(
+            torch.stack(
+                [
+                    prev_all_atom_mask[..., rc.atom_order["C3\'"]],
+                    prev_all_atom_mask[..., rc.atom_order["O3\'"]],
+                    all_atom_mask[..., rc.atom_order["P"]],
+                    all_atom_mask[..., rc.atom_order["O5\'"]],
+                ],
+                dim=-1,
+            ),
+            dim=-1,
+            dtype=all_atom_mask.dtype,
+        )
+        psi_mask = torch.where(~is_na, psi_mask, zeta_mask)
 
     chi_atom_indices = torch.as_tensor(
         get_chi_atom_indices(), device=aatype.device
