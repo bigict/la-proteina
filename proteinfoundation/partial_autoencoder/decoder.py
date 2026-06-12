@@ -214,6 +214,8 @@ class DecoderTransformer(torch.nn.Module):
         aa_a37_mask = get_atom_mask(device=logits_out.device)  # [21, 37] boolean
         atom_mask = aa_a37_mask[aatype_max, :]  # [b, n, 37] boolean
         atom_mask = atom_mask * mask[..., None]  # [b, n, 37] boolean
+        if "coord_mask" in input:
+            atom_mask = atom_mask * input["coord_mask"]  # [b, n, 37] boolean
 
         output = {
             "coors_nm": coors_a37_nm,  # [b, n, 37, 3]

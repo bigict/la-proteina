@@ -900,6 +900,8 @@ class AutoEncoder(L.LightningModule):
             "residue_mask": mask,
             "mask": mask,
         }
+        if "coord_mask" in batch:
+            input_decoder["coord_mask"] = batch["coord_mask"]
         output = self.decoder(input_decoder)
         # {
         #   "coors_nm": all atom coordinates, shape [b, n, 37, 3], in nm
