@@ -260,17 +260,21 @@ def save_predictions(root_path, predictions, pseudo_linker_length=0):
             )  # [b, n, 37, 3]
             residue_type = x_out["aatype_max"][j] * mask  # [n, 37, 3] and [n]
 
-            chain_index = None
-            if "residue_pdb_idx" in x_in and pseudo_linker_length > 0:
-                chain_index = create_chain_index(
-                    x_in["residue_pdb_idx"][j].detach().cpu().numpy(), pseudo_linker_length
-                )
+            residue_index, chain_index = None, None
+            if "residue_pdb_idx" in x_in:
+                if pseudo_linker_length > 0:
+                    chain_index = create_chain_index(
+                        x_in["residue_pdb_idx"][j].detach().cpu().numpy(),
+                        pseudo_linker_length
+                    )
+                residue_index = x_in["residue_pdb_idx"][j].cpu().numpy()
 
             # Save generated structure as pdb
             pdb_path = os.path.join(root_path, f"{pdb_id}_{i}_{j}.pdb")
             write_prot_to_pdb(
                 prot_pos=coors_atom37.float().detach().cpu().numpy(),
                 aatype=residue_type.detach().cpu().numpy(),
+                residue_index=residue_index,
                 file_path=pdb_path,
                 chain_index=chain_index,
                 overwrite=True,

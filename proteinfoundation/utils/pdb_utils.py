@@ -72,13 +72,15 @@ def create_full_prot(
     atom37_mask: np.ndarray,
     chain_index=None,
     aatype=None,
+    residue_index=None,
     b_factors=None,
 ):
     assert atom37.ndim == 3
     assert atom37.shape[-1] == 3
     assert atom37.shape[-2] == residue_constants.atom_type_num
     n = atom37.shape[0]
-    residue_index = np.arange(n)
+    if residue_index is None:
+        residue_index = np.arange(n)
     if chain_index is None:
         chain_index = np.zeros(n)
     if b_factors is None:
@@ -99,6 +101,7 @@ def write_prot_to_pdb(
     prot_pos: np.ndarray,
     file_path: str,
     aatype: np.ndarray = None,
+    residue_index: np.ndarray = None,
     chain_index: np.ndarray = None,
     overwrite=False,
     no_indexing=False,
@@ -132,6 +135,7 @@ def write_prot_to_pdb(
                     atom37_mask,
                     chain_index=chain_index,
                     aatype=aatype,
+                    residue_index=residue_index,
                     b_factors=b_factors,
                 )
                 pdb_prot = to_pdb(prot, model=t + 1, add_end=False)
@@ -143,6 +147,7 @@ def write_prot_to_pdb(
                 atom37_mask,
                 chain_index=chain_index,
                 aatype=aatype,
+                residue_index=residue_index,
                 b_factors=b_factors,
             )
             pdb_prot = to_pdb(prot, model=1, add_end=False)
