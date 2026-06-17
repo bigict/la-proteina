@@ -263,6 +263,7 @@ def save_predictions(
     job_id: int = 0,
     chain_indexes: np.ndarray = None,
     cath_codes: List[List[List[str]]] = None,
+    pseudo_linker_length: int = 0,
 ) -> None:
     """
     Saves generated samples.
@@ -280,10 +281,15 @@ def save_predictions(
 
     samples_per_length = defaultdict(int)
     for j, pred in enumerate(predictions):
-        coors_atom37, residue_type = pred  # [n, 37, 3] and [n]
+        coors_atom37, residue_type, extra_info = pred  # [n, 37, 3] and [n]
         n = coors_atom37.shape[-3]
+        residue_index = None
+        if "residue_index" in extra_info:
+            residue_index = extra_info["residue_index"].cpu().numpy()
         if chain_indexes:
             chain_index = chain_indexes[j].numpy()
+        elif residue_index is not None and pseudo_linker_length > 0:
+            chain_index = create_chain_index(residue_index, pseudo_linker_length)
         else:
             chain_index = None
 
@@ -302,6 +308,7 @@ def save_predictions(
         write_prot_to_pdb(
             prot_pos=coors_atom37.float().detach().cpu().numpy(),
             aatype=residue_type.detach().cpu().numpy(),
+            residue_index=residue_index,
             file_path=pdb_path,
             chain_index=chain_index,
             overwrite=True,
@@ -316,15 +323,21 @@ def save_motif_predictions(
     job_id: int = 0,
     chain_indexes: np.ndarray = None,
     motif_pdb_name: str = None,
+    pseudo_linker_length: int = 0,
 ) -> None:
     predictions = [sample for sublist in predictions for sample in sublist]
     print([(p[0].shape, p[1].shape) for p in predictions])
     samples_per_length = defaultdict(int)
     for j, pred in enumerate(predictions):
-        coors_atom37, residue_type = pred  # [n, 37, 3] and [n]
+        coors_atom37, residue_type, extra_info = pred  # [n, 37, 3] and [n]
         n = coors_atom37.shape[-3]
+        residue_index = None
+        if "residue_index" in extra_info:
+            residue_index = extra_info["residue_index"].cpu().numpy()
         if chain_indexes:
             chain_index = chain_indexes[j].numpy()
+        elif residue_index is not None and pseudo_linker_length > 0:
+            chain_index = create_chain_index(residue_index, pseudo_linker_length)
         else:
             chain_index = None
         dir_name = f"job_{job_id}_id_{j}_motif_{motif_pdb_name}"
@@ -336,6 +349,7 @@ def save_motif_predictions(
         write_prot_to_pdb(
             prot_pos=coors_atom37.float().detach().cpu().numpy(),
             aatype=residue_type.detach().cpu().numpy(),
+            residue_index=residue_index,
             file_path=pdb_path,
             chain_index=chain_index,
             overwrite=True,
@@ -421,7 +435,7 @@ def main():
     predictions = trainer.predict(model, dataloader)
 
     chain_indexes = None
-    pseudo_linker_length=dataset.get("pseudo_linker_length", 0)
+    pseudo_linker_length=cfg_gen.dataset.get("pseudo_linker_length", 0)
     if pseudo_linker_length > 0:
         pass  # TODO: make chain_indexes here
 
@@ -432,6 +446,7 @@ def main():
             job_id=args.job_id,
             chain_indexes=chain_indexes,
             motif_pdb_name=cfg_gen.dataset.get("motif_task_name", None),
+            pseudo_linker_length=pseudo_linker_length,
         )
         import shutil
 
@@ -445,6 +460,7 @@ def main():
             job_id=args.job_id,
             chain_indexes=chain_indexes,
             cath_codes=dataset.cath_codes,
+            pseudo_linker_length=pseudo_linker_length,
         )
 
 

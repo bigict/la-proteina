@@ -573,8 +573,11 @@ class Proteina(L.LightningModule):
 
         generation_list = []
         for i in range(sample_prots["coors"].shape[0]):
+            extra_info = {}
+            if "residue_pdb_idx" in batch:
+                extra_info["residue_index"] = batch["residue_pdb_idx"][i]
             generation_list.append(
-                (sample_prots["coors"][i], sample_prots["residue_type"][i])
+                (sample_prots["coors"][i], sample_prots["residue_type"][i], extra_info)
             )  # Tuple (coors [n, 37, 3], aatype [n])
         return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
 
