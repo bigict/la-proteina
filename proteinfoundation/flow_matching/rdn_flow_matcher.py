@@ -188,6 +188,7 @@ class RDNFlowMatcher(BaseFlowMatcher):
         mask: Bool[Tensor, "* n"],
         t: Float[Tensor, "*"],
         nn_out: Dict[str, Float[Tensor, "* n d"]],
+        w: Optional[Float[Tensor, "* n"]] = None,
     ) -> Float[Tensor, "*"]:
         """
         Computes flow matching loss per element in the batch.
@@ -211,6 +212,8 @@ class RDNFlowMatcher(BaseFlowMatcher):
         )
         nres = torch.sum(mask, dim=-1)  # .clamp(min=1)  # [*]
         err = (x_1 - nn_out["x_1"]) * mask[..., None]  # [*, n, d]
+        if w is not None:
+            err = err * torch.sqrt(w[..., None])  # [*, n, d]
         loss = torch.sum(err**2, dim=(-1, -2)) / nres  # [*]
         total_loss_w = 1.0 / ((1.0 - t) ** 2 + 1e-5)
         loss = loss * total_loss_w  # [*]
