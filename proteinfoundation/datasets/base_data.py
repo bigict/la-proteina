@@ -68,6 +68,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         self.val_ds = None
         self.test_ds = None
         self.clusterid_to_seqid_mappings = None  # for cluster sampling
+        self.cluster_weights = None
         logger.info(f"restype_list = {json.dumps(rc.restype_list)}")
 
     def setup(self, stage: Optional[str] = None):
@@ -116,6 +117,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         dataset: Dataset,
         shuffle: bool = False,
         clusterid_to_seqid_mapping: Dict[str, List[str]] = None,
+        cluster_weights: Dict[str, float] = None,
     ) -> DataLoader:
         """Returns the dataloader for the corresponding dataset.
 
@@ -135,6 +137,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
             sampler = ClusterSampler(
                 dataset=dataset,
                 clusterid_to_seqid_mapping=clusterid_to_seqid_mapping,
+                cluster_weights=cluster_weights,
                 sampling_mode=self.sampling_mode,
             )
             shuffle = False
@@ -166,11 +169,13 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
             if self.clusterid_to_seqid_mappings
             else None
         )
+        cluster_weights = self.cluster_weight
         shuffle = True
         train_dl = self._get_dataloader(
             dataset=self.train_ds,
             shuffle=shuffle,
             clusterid_to_seqid_mapping=clusterid_to_seqid_mapping,
+            cluster_weights=cluster_weights,
         )
         return train_dl
 

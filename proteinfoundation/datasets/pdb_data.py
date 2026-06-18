@@ -19,6 +19,7 @@ from proteinfoundation.utils.cluster_utils import (
     expand_cluster_splits,
     fasta_to_df,
     read_cluster_tsv,
+    read_cluster_weight,
     setup_clustering_file_paths,
     split_dataframe,
 )
@@ -416,6 +417,11 @@ class PDBDataSplitter:
             )
             # construct cluster_dict to map from cluster representative to all sequence ids in cluster
             clusterid_to_seqid_mapping = read_cluster_tsv(cluster_tsv_filepath)
+            cluster_weight_filepath = cluster_tsv_filepath.with_suffix("wt")
+            if cluster_weight_filepath.exists():
+                cluster_weights = read_cluster_weight(cluster_weight_filepath)
+            else:
+                cluster_weights = None
             # use cluster dict to extend splits from cluster representatives to all sequence ids included in these clusters
             self.dfs_splits, self.clusterid_to_seqid_mappings = expand_cluster_splits(
                 cluster_rep_splits=splits,
@@ -424,6 +430,7 @@ class PDBDataSplitter:
         return (
             self.dfs_splits,
             self.clusterid_to_seqid_mappings,
+            self.cluster_weights,
         )
 
 
@@ -708,7 +715,7 @@ class PDBLightningDataModule(BaseLightningDataModule):
             self.df_data = pd.read_csv(self.data_dir / df_data_name)
 
         # split the dataset into train, val and test and set attributes that are used for dataset creation
-        (self.dfs_splits, self.clusterid_to_seqid_mappings) = (
+        (self.dfs_splits, self.clusterid_to_seqid_mappings, self.cluster_weights) = (
             self.datasplitter.split_data(self.df_data, file_identifier)
         )
 

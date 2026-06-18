@@ -27,6 +27,7 @@ class ClusterSampler(Sampler):
         dataset: torch_geometric.data.Dataset,
         clusterid_to_seqid_mapping: Dict[str, List[str]],
         sampling_mode: Literal["cluster-random", "cluster-reps"],
+        cluster_weights: Dict[str, float] = None,
         shuffle: bool = True,
         drop_last: bool = False,
         dimer_mode: bool = False,
@@ -50,6 +51,7 @@ class ClusterSampler(Sampler):
         self.dataset = dataset
         self.clusterid_to_seqid_mapping = clusterid_to_seqid_mapping
         self.cluster_names = list(clusterid_to_seqid_mapping.keys())
+        self.cluster_weights = cluster_weights
         self.sampling_mode = sampling_mode
         if dataset.database == "pdb" or dataset.database == "scop":  # PDBDataset
             self.sequence_id_to_idx = {
@@ -86,7 +88,15 @@ class ClusterSampler(Sampler):
             )
             self.total_size = self.num_samples * self.num_replicas
             # Distributed mode, deterministically shuffle
-            indices = torch.randperm(len(self.cluster_names)).tolist()
+            if self.cluster_weights:
+                indices = torch.multinomial(
+                    torch.as_tensor(
+                        [self.cluster_weights.get(name, 1.0) for name iin self.cluster_names],
+                        dtype=torch.float,
+                    ), len(self.cluster_names), replacement=True,
+                ).tolist()
+            else:
+                indices = torch.randperm(len(self.cluster_names)).tolist()
 
             # drop samples to make it evenly divisible
             if self.drop_last:
@@ -409,6 +419,15 @@ def read_cluster_tsv(cluster_tsv_filepath: pathlib.Path) -> Dict[str, List[str]]
         for line in file:
             cluster_name, sequence_name = line.strip().split("\t")
             cluster_dict.setdefault(cluster_name, []).append(sequence_name)
+    return cluster_dict
+
+
+def read_cluster_weight(cluster_weight_filepath: pathlib.Path) -> Dict[str, float]:
+    cluster_dict = {}
+    with open(cluster_tsv_filepath, "r") as file:
+        for line in file:
+            cluster_name, cluster_weight = line.strip().split("\t")
+            cluster_dict[cluster_name] = float(cluster_weight)
     return cluster_dict
 
 
