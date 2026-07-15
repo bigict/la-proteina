@@ -823,22 +823,10 @@ class BackboneTorsionAnglesSeqFeat(Feature):
             (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
             (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
         )
-        n_idx = torch.where(
-            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
-        )
-        ca_idx = torch.where(
-            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
-        )
-        c_idx = torch.where(
-            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
-        )
 
-        # N = a37[:, :, 0, :]  # [b, n, 3]
-        N = atom_gather(a37, n_idx, -2)
-        # CA = a37[:, :, 1, :]  # [b, n, 3]
-        CA = atom_gather(a37, ca_idx, -2)
-        # C = a37[:, :, 2, :]  # [b, n, 3]
-        C = atom_gather(a37, c_idx, -2)
+        N = a37[:, :, 0, :]  # [b, n, 3]
+        CA = a37[:, :, 1, :]  # [b, n, 3]
+        C = a37[:, :, 2, :]  # [b, n, 3]
 
         psi = signed_dihedral_angle(
             N[:, :-1, :], CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :]
@@ -850,6 +838,27 @@ class BackboneTorsionAnglesSeqFeat(Feature):
             C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :], C[:, 1:, :]
         )  # [b, n-1]
         bb_angles = torch.stack([psi, omega, phi], dim=-1)  # [b, n-1, 3]
+
+        if torch.any(is_na):
+            C4p = a37[:, :, rc.atom_order["C4\'"], :]  # [b, n, 3]
+            C3p = a37[:, :, rc.atom_order["C3\'"], :]  # [b, n, 3]
+            O3p = a37[:, :, rc.atom_order["O3\'"], :]  # [b, n, 3]
+            C4p = a37[:, :, rc.atom_order["C4\'"], :]  # [b, n, 3]
+            P   = a37[:, :, rc.atom_order["P"   ], :]   # [b, n, 3]
+            O5p = a37[:, :, rc.atom_order["O5\'"], :]  # [b, n, 3]
+
+            epsilon = signed_dihedral_angle(
+                C4p[:, :-1, :], C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :]
+            )  # [b, n-1]
+            zeta = signed_dihedral_angle(
+                C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :], O5p[:, 1:, :]
+            )  # [b, n-1]
+            zeros = torch.zeros_like(zeta)
+            bb_angles = torch.where(
+                ~is_na[..., :-1, None],
+                bb_angles,
+                torch.stack([zeta, torch.zeros_like(zeta), epsilon], dim=-1)
+            )  # [b, n-1, 3]
 
         good_pair = idx[:, 1:] - idx[:, :-1] == 1  # boolean [b, n-1]
         bb_angles = bb_angles * good_pair[..., None]  # [b, n-1, 3]
@@ -900,22 +909,10 @@ class BackboneBondAnglesSeqFeat(Feature):
             (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
             (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
         )
-        n_idx = torch.where(
-            ~is_na, rc.atom_order["N"], rc.atom_order.get("OP1", rc.atom_order["N"])
-        )
-        ca_idx = torch.where(
-            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
-        )
-        c_idx = torch.where(
-            ~is_na, rc.atom_order["C"], rc.atom_order.get("OP2", rc.atom_order["C"])
-        )
 
-        # N = a37[:, :, 0, :]  # [b, n, 3]
-        N = atom_gather(a37, n_idx, -2)
-        # CA = a37[:, :, 1, :]  # [b, n, 3]
-        CA = atom_gather(a37, ca_idx, -2)
-        # C = a37[:, :, 2, :]  # [b, n, 3]
-        C = atom_gather(a37, c_idx, -2)
+        N = a37[:, :, 0, :]  # [b, n, 3]
+        CA = a37[:, :, 1, :]  # [b, n, 3]
+        C = a37[:, :, 2, :]  # [b, n, 3]
         theta_1 = bond_angles(N[:, :, :], CA[:, :, :], C[:, :, :])  # [b, n]
         theta_2 = bond_angles(CA[:, :-1, :], C[:, :-1, :], N[:, 1:, :])  # [b, n-1]
         theta_3 = bond_angles(C[:, :-1, :], N[:, 1:, :], CA[:, 1:, :])  # [b, n-1]
@@ -931,6 +928,27 @@ class BackboneBondAnglesSeqFeat(Feature):
         theta_3 = torch.cat([theta_3, zero_pad], dim=-1)  # [b, n]
 
         bb_angles = torch.stack([theta_1, theta_2, theta_3], dim=-1)  # [b, n, 3]
+        if torch.any(is_na):
+            OP1 = a37[:, :, rc.atom_order["OP1" ], :]
+            P   = a37[:, :, rc.atom_order["P"   ], :]
+            OP2 = a37[:, :, rc.atom_order["OP2" ], :]
+            C3p = a37[:, :, rc.atom_order["C3\'"], :]
+            O3p = a37[:, :, rc.atom_order["O3\'"], :]
+
+            theta_x = bond_angles(O3p[:, :-1, :], P[:, 1:, :], OP1[:, 1:, :])   # [b, n-1]
+            theta_y = bond_angles(O3p[:, :-1, :], P[:, 1:, :], OP2[:, 1:, :])   # [b, n-1]
+            theta_z = bond_angles(C3p[:, :-1, :], O3p[:, :-1, :], P[:, 1:, :])  # [b, n-1]
+
+            theta_x = torch.cat([theta_x, zero_pad], dim=-1)  # [b, n]
+            theta_y = torch.cat([theta_y, zero_pad], dim=-1)  # [b, n]
+            theta_z = torch.cat([theta_z, zero_pad], dim=-1)  # [b, n]
+
+            bb_angles = torch.where(
+                ~is_na[..., None],
+                bb_angles,
+                torch.stack([theta_x, theta_y, theta_z], dim=-1)
+            )
+
         return bb_angles
 
 

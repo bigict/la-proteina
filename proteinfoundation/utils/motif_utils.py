@@ -122,7 +122,7 @@ def generate_motif_indices(
             - motif_indices (List[List[int]]): List of indices where motifs are located.
             - out_strs (List[str]): String of motif indices and scaffold lengths.
     """
-    ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+    ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     components = contig.split("/")
     ranges = []
     motif_length = 0
@@ -281,7 +281,7 @@ def extract_motif_from_pdb(
     else:
         # Otherwise, use the old logic (residue/range based)
         position = position.split("/")
-        ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+        ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         array = strucio.load_structure(pdb_path, model=1)
         motif_array = []
         seen = set()
@@ -378,7 +378,7 @@ def pad_motif_to_full_length(
         x_motif_full (torch.Tensor): Motif positions in atom37 format. (n_full_length, 37, 3)
         residue_type_full (torch.Tensor): Residue types of the motif. (n_full_length)
     """
-    ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+    ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     components = contig_string.split("/")
     current_position = 1  # Start positions at 1 for 1-based indexing
     motif_index = []
