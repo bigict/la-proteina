@@ -276,7 +276,7 @@ class GenDataset(Dataset):
                 segment_order=motif_cfg["segment_order"],
             )
 
-        ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+        ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
         residue_ids = []
         for i, outstr in zip(idx, outstrs):
