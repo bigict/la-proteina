@@ -443,7 +443,7 @@ def evaluate_protein(protein_id, pwm_id, pdb_files, pdb_root=None, global_align=
             else:
                 failed += 1
 
-    if len(aligned_frags) < 2:
+    if len(aligned_frags) < 1:
         logging.error(f"  insufficient sequences ({len(aligned_frags)}) for {protein_id}")
         return None
 
