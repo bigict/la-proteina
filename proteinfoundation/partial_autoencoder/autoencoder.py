@@ -528,7 +528,6 @@ class AutoEncoder(L.LightningModule):
         weighted_total = total_mean * weight
         return {
             "struct_bond": weighted_total,
-            "struct_bond_justlog": weighted_total,
             "struct_bond_intra_justlog": intra_mean * weight,
             "struct_bond_inter_justlog": inter_mean * weight,
         }
