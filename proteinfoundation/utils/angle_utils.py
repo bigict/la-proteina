@@ -18,8 +18,8 @@ def bond_angles(a, b, c):
     Returns:
         Angle between 0 and pi, shape [*]
     """
-    b0 = b - a  # [*, 3]
-    b1 = c - a  # [*, 3]
+    b0 = a - b  # [*, 3]
+    b1 = c - b  # [*, 3]
     b0, b1 = map(normalize_last_dim, (b0, b1))  # [*, 3] each
     cos_angle = torch.linalg.vecdot(b0, b1, dim=-1)  # [*]
     cross = torch.linalg.cross(b0, b1, dim=-1)  # [*, 3]
