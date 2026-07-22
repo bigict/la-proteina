@@ -303,6 +303,19 @@ class AutoEncoder(L.LightningModule):
                 )
             )
 
+        # Nucleic-acid covalent bond geometry
+        if self.cfg_ae.loss.get("bond"):
+            losses.update(
+                self.compute_struct_bond_loss(
+                    output_dec=output_dec,
+                    batch=batch,
+                    weight=self.cfg_ae.loss.bond.weight,
+                    tolerance_ang=self.cfg_ae.loss.bond.get(
+                        "tolerance_ang", 0.25
+                    ),
+                )
+            )
+
         # Sequence loss
         losses.update(
             self.compute_seq_rec_loss(
@@ -410,6 +423,115 @@ class AutoEncoder(L.LightningModule):
         losses["struct_lddt"] = err * weight
         losses["struct_lddt_justlog"] = err * weight
         return losses
+
+    def compute_struct_bond_loss(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        weight: float = 1.0,
+        tolerance_ang: float = 0.25,
+    ) -> Dict[str, Float[Tensor, "b"]]:
+        """Penalize nucleic-acid covalent bond-length reconstruction errors.
+
+        The target distances come from the ground-truth structure. Errors are
+        measured in Angstrom and use an AlphaFold-style flat-bottom L1 loss:
+        ``relu(abs(d_pred - d_true) - tolerance_ang)``.
+        """
+        pred = output_dec["coors_nm"]
+        true = batch["coords_nm"]
+        residue_mask = output_dec["residue_mask"].bool()
+        atom_mask = batch["coord_mask"].bool() & residue_mask[..., None]
+        aatype = batch["residue_type"]
+
+        def flat_bottom(pred_i, pred_j, true_i, true_j):
+            pred_dist = torch.linalg.vector_norm(pred_i - pred_j, dim=-1)
+            true_dist = torch.linalg.vector_norm(true_i - true_j, dim=-1)
+            error_ang = nm_to_ang(torch.abs(pred_dist - true_dist))
+            return torch.nn.functional.relu(error_ang - tolerance_ang)
+
+        def weighted_sum_and_count(loss, bond_mask, bond_weight):
+            reduce_dims = tuple(range(1, loss.ndim))
+            numerator = torch.sum(
+                loss * bond_mask * bond_weight, dim=reduce_dims
+            )
+            return numerator, torch.sum(bond_mask, dim=reduce_dims)
+
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        is_na = is_dna | is_rna
+        residue_weight = token_level_w(aatype, self.cfg_ae.loss.bond)
+
+        intra_bonds = (
+            ("P", "O5'"),
+            ("O5'", "C5'"),
+            ("C5'", "C4'"),
+            ("C4'", "C3'"),
+            ("C3'", "O3'"),
+            ("C4'", "O4'"),
+            ("O4'", "C1'"),
+            ("C1'", "C2'"),
+            ("C2'", "C3'"),
+        )
+        intra_atom_indices = torch.tensor(
+            [tuple(rc.atom_order[atom] for atom in bond) for bond in intra_bonds],
+            device=pred.device,
+        )
+        intra_atom_i, intra_atom_j = intra_atom_indices.unbind(dim=-1)
+        intra_loss = flat_bottom(
+            pred[..., intra_atom_i, :],
+            pred[..., intra_atom_j, :],
+            true[..., intra_atom_i, :],
+            true[..., intra_atom_j, :],
+        )
+        intra_mask = (
+            is_na[..., None]
+            & atom_mask[..., intra_atom_i]
+            & atom_mask[..., intra_atom_j]
+        )
+        intra_numerator, intra_denominator = weighted_sum_and_count(
+            intra_loss, intra_mask, residue_weight[..., None]
+        )
+
+        o3_idx = rc.atom_order["O3'"]
+        p_idx = rc.atom_order["P"]
+        inter_loss = flat_bottom(
+            pred[..., :-1, o3_idx, :],
+            pred[..., 1:, p_idx, :],
+            true[..., :-1, o3_idx, :],
+            true[..., 1:, p_idx, :],
+        )
+        residue_delta = (
+            batch["residue_pdb_idx"][..., 1:]
+            - batch["residue_pdb_idx"][..., :-1]
+        )
+        same_na_type = (is_dna[..., :-1] & is_dna[..., 1:]) | (
+            is_rna[..., :-1] & is_rna[..., 1:]
+        )
+        inter_mask = (
+            (batch["chains"][..., :-1] == batch["chains"][..., 1:])
+            & ((residue_delta == 0) | (residue_delta == 1))
+            & same_na_type
+            & atom_mask[..., :-1, o3_idx]
+            & atom_mask[..., 1:, p_idx]
+        )
+        inter_numerator, inter_denominator = weighted_sum_and_count(
+            inter_loss, inter_mask, residue_weight[..., :-1]
+        )
+
+        eps = 1e-9
+        intra_mean = intra_numerator / (intra_denominator + eps)
+        inter_mean = inter_numerator / (inter_denominator + eps)
+        total_mean = (intra_numerator + inter_numerator) / (
+            intra_denominator + inter_denominator + eps
+        )
+
+        weighted_total = total_mean * weight
+        return {
+            "struct_bond": weighted_total,
+            "struct_bond_justlog": weighted_total,
+            "struct_bond_intra_justlog": intra_mean * weight,
+            "struct_bond_inter_justlog": inter_mean * weight,
+        }
 
     def compute_struct_rec_loss(
         self,
