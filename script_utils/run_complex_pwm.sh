@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage:
   run_complex_pwm.sh predict <pdb_or_dir> <ae.ckpt> <output_dir> [device]
-  run_complex_pwm.sh eval <input.txt> <ae.ckpt> <output_dir> [pdb_root] [device]
+  run_complex_pwm.sh eval <input.txt> <prediction_dir> <output_dir>
 
 Examples:
   bash script_utils/run_complex_pwm.sh predict \
@@ -20,7 +20,7 @@ Examples:
     data/gt_deeppbs_extracted checkpoints/protein_dna_ae.ckpt results/deeppbs_pwm
 
   bash script_utils/run_complex_pwm.sh eval \
-    data/eval_input.txt checkpoints/protein_dna_ae.ckpt results/eval data/complexes
+    script_utils/eval_pwm_input_from_deeppbs.txt results/deeppbs_pwm results/eval
 EOF
 }
 
@@ -51,21 +51,17 @@ case "${command_name}" in
     ;;
 
   eval)
-    if [[ $# -lt 3 || $# -gt 5 ]]; then
+    if [[ $# -ne 3 ]]; then
       usage
       exit 2
     fi
     input_file="$1"
-    checkpoint="$2"
+    prediction_dir="$2"
     output_dir="$3"
-    pdb_root="${4:-.}"
-    device="${5:-}"
     command_args=("${PYTHON_BIN}" "${SCRIPT_DIR}/eval_pwm_from_complex.py" \
       "${input_file}" \
-      --checkpoint "${checkpoint}" \
-      --output-dir "${output_dir}" \
-      --pdb-root "${pdb_root}")
-    [[ -n "${device}" ]] && command_args+=(--device "${device}")
+      --prediction-dir "${prediction_dir}" \
+      --output-dir "${output_dir}")
     "${command_args[@]}"
     ;;
 

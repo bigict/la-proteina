@@ -7,11 +7,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-import torch
 
 import eval_pwm_from_pdb as pdb_eval
-from predict_pwm_from_complex import load_complex, recover_pwm
-from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.pwm_utils import ic_weighted_pcc
 
 
@@ -36,9 +33,16 @@ def align_pwms(reference: np.ndarray, predicted: np.ndarray):
     return best
 
 
-def evaluate(model, pdb_path, pwm_id, device):
-    batch, reference_chain = load_complex(str(pdb_path))
-    predicted = recover_pwm(model, batch, device).numpy()
+def load_predicted_pwm(path: Path) -> np.ndarray:
+    with open(path, newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    return np.array(
+        [[float(row[base]) for base in ("A", "C", "G", "T")] for row in rows]
+    )
+
+
+def evaluate(prediction_path: Path, pwm_id: str):
+    predicted = load_predicted_pwm(prediction_path)
     reference = pdb_eval.load_pwm(pwm_id)
     score, orientation, ref_start, pred_start, ref, pred = align_pwms(
         reference, predicted
@@ -47,7 +51,7 @@ def evaluate(model, pdb_path, pwm_id, device):
         key: float(value) for key, value in pdb_eval.compute_all_metrics(ref, pred).items()
     }
     return {
-        "reference_chain": reference_chain,
+        "prediction_file": prediction_path.name,
         "orientation": orientation,
         "alignment_score": float(score),
         "reference_start": ref_start,
@@ -61,42 +65,38 @@ def evaluate(model, pdb_path, pwm_id, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("input_file", help="CSV lines: protein_id,pwm_id,complex_pdb")
-    parser.add_argument("--checkpoint", required=True, help="Protein-DNA AE checkpoint")
+    parser.add_argument("input_file", help="CSV lines: protein_id,pwm_id,...")
+    parser.add_argument("--prediction-dir", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--pdb-root", default=".")
     parser.add_argument(
         "--pwm-data",
         default=str(Path(__file__).with_name("pwms.pickle")),
         help="JASPAR/H11MO PWM pickle",
     )
-    parser.add_argument(
-        "--device", default="cuda" if torch.cuda.is_available() else "cpu"
-    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    prediction_dir = Path(args.prediction_dir)
+    predictions = {
+        path.name.removesuffix("_forward.csv").lower(): path
+        for path in prediction_dir.glob("*_forward.csv")
+    }
     pdb_eval.DATA_PATH = args.pwm_data
     pdb_eval._pwm_cache.clear()
-
-    device = torch.device(args.device)
-    model = AutoEncoder.load_from_checkpoint(
-        args.checkpoint, map_location="cpu"
-    ).eval().to(device)
 
     results = []
     with open(args.input_file, newline="") as handle:
         for row in csv.reader(line for line in handle if not line.lstrip().startswith("#")):
-            if not row or len(row) != 3:
+            if len(row) < 2:
                 continue
-            protein_id, pwm_id, pdb_file = (value.strip() for value in row)
-            result = evaluate(
-                model,
-                Path(args.pdb_root) / pdb_file,
-                pwm_id,
-                device,
-            )
+            protein_id, pwm_id = (value.strip() for value in row[:2])
+            prediction_key = f"{protein_id}_{pwm_id.replace('.', '_')}_gt".lower()
+            if prediction_key not in predictions:
+                raise FileNotFoundError(
+                    f"prediction not found for {protein_id},{pwm_id}: {prediction_key}"
+                )
+            result = evaluate(predictions[prediction_key], pwm_id)
             results.append({"protein_id": protein_id, "pwm_id": pwm_id, **result})
 
     if not results:
