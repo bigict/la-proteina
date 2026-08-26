@@ -34,6 +34,7 @@ class MultiheadAttnAndTransition(torch.nn.Module):
         use_qkln,
         dropout=0.0,
         expansion_factor=4,
+        use_xformers=False,
     ):
         super().__init__()
         self.parallel = parallel_mha_transition
@@ -52,6 +53,7 @@ class MultiheadAttnAndTransition(torch.nn.Module):
             nheads=nheads,
             dim_cond=dim_cond,
             use_qkln=use_qkln,
+            use_xformers=use_xformers,
         )
 
         self.transition = TransitionADALN(

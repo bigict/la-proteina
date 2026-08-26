@@ -382,9 +382,27 @@ def dense_padded_collate(
             value, mask = _dense_padded_collate(
                 attr, values, data_list, stores, max_size=max_size
             )
+            if torch.is_tensor(value) and len(value.shape) > 1:
+                mod = value.shape[1] % 8
+                if mod != 0:
+                    padding_value = (
+                        FLOAT_PADDING_VALUE
+                        if torch.is_floating_point(value)
+                        else NON_FLOAT_PADDING_VALUE
+                    )
+                    value = torch.cat(
+                        (value, value.new_full((value.shape[0], 8 - mod, *value.shape[2:]), padding_value)), dim=1
+                    )
+
 
             out_store[attr] = value
             if mask is not None:
+                if torch.is_tensor(mask) and len(mask.shape) > 1:
+                    mod = mask.shape[1] % 8
+                    if mod != 0:
+                        mask = torch.cat(
+                            (mask, mask.new_zeros(mask.shape[0], 8 - mod, *mask.shape[2:])), dim=1
+                        )
                 if key is not None:
                     mask_dict[key][attr] = mask
                 else:
