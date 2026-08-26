@@ -122,22 +122,38 @@ def save_both_orientations(pwm: torch.Tensor, output_prefix: str) -> tuple[Path,
     return forward_path, reverse_path
 
 
+def predict_one(model, pdb_path: Path, output_prefix: Path, device: torch.device):
+    batch, reference_chain = load_complex(str(pdb_path))
+    pwm = recover_pwm(model, batch, device)
+    forward_path, reverse_path = save_both_orientations(pwm, str(output_prefix))
+    print(
+        f"{pdb_path.name}: chain={reference_chain}, positions={len(pwm)}, "
+        f"outputs={forward_path.name},{reverse_path.name}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdb", required=True, help="Protein-DNA complex PDB file")
+    parser.add_argument("--input", required=True, help="Complex PDB file or directory")
     parser.add_argument("--checkpoint", required=True, help="Protein-DNA AE checkpoint")
-    parser.add_argument("--output-prefix", required=True, help="Output PWM file prefix")
+    parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
     args = parser.parse_args()
 
-    batch, reference_chain = load_complex(args.pdb)
+    input_path = Path(args.input)
+    pdb_files = [input_path] if input_path.is_file() else sorted(input_path.glob("*.pdb"))
+    if not pdb_files:
+        parser.error(f"no PDB files found at {input_path}")
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     model = AutoEncoder.load_from_checkpoint(args.checkpoint, map_location="cpu")
-    pwm = recover_pwm(model, batch, torch.device(args.device))
-    forward_path, reverse_path = save_both_orientations(pwm, args.output_prefix)
-    print(f"Reference DNA chain: {reference_chain}")
-    print(f"Saved {len(pwm)} positions to {forward_path} and {reverse_path}")
+    device = torch.device(args.device)
+    for pdb_path in pdb_files:
+        predict_one(model, pdb_path, output_dir / pdb_path.stem, device)
+    print(f"Predicted {len(pdb_files)} complexes into {output_dir}")
 
 
 if __name__ == "__main__":

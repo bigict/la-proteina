@@ -9,12 +9,15 @@ export PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 usage() {
   cat <<'EOF'
 Usage:
-  run_complex_pwm.sh predict <complex.pdb> <ae.ckpt> <output_prefix> [device]
+  run_complex_pwm.sh predict <pdb_or_dir> <ae.ckpt> <output_dir> [device]
   run_complex_pwm.sh eval <input.txt> <ae.ckpt> <output_dir> [pdb_root] [device]
 
 Examples:
   bash script_utils/run_complex_pwm.sh predict \
-    data/complex.pdb checkpoints/protein_dna_ae.ckpt results/complex_pwm
+    data/complex.pdb checkpoints/protein_dna_ae.ckpt results/pwm
+
+  bash script_utils/run_complex_pwm.sh predict \
+    data/gt_deeppbs_extracted checkpoints/protein_dna_ae.ckpt results/deeppbs_pwm
 
   bash script_utils/run_complex_pwm.sh eval \
     data/eval_input.txt checkpoints/protein_dna_ae.ckpt results/eval data/complexes
@@ -35,14 +38,14 @@ case "${command_name}" in
       usage
       exit 2
     fi
-    pdb_path="$1"
+    pdb_input="$1"
     checkpoint="$2"
-    output_prefix="$3"
+    output_dir="$3"
     device="${4:-}"
     command_args=("${PYTHON_BIN}" "${SCRIPT_DIR}/predict_pwm_from_complex.py" \
-      --pdb "${pdb_path}" \
+      --input "${pdb_input}" \
       --checkpoint "${checkpoint}" \
-      --output-prefix "${output_prefix}")
+      --output-dir "${output_dir}")
     [[ -n "${device}" ]] && command_args+=(--device "${device}")
     "${command_args[@]}"
     ;;
