@@ -61,12 +61,14 @@ class PairBiasAttention(nn.Module):
         dim_out: int,
         qkln: bool,
         pair_dim: Optional[int] = None,
+        use_xformers: bool = False,
         **kawrgs,  # noqa
     ):
         super().__init__()
         inner_dim = dim_head * heads
         self.node_dim, self.pair_dim = node_dim, pair_dim
         self.heads, self.scale = heads, dim_head**-0.5
+        self.use_xformers = use_xformers
         self.to_qkv = nn.Linear(node_dim, inner_dim * 3, bias=bias)
         self.to_g = nn.Linear(node_dim, inner_dim)
         self.to_out_node = nn.Linear(inner_dim, default(dim_out, node_dim))
@@ -115,6 +117,23 @@ class PairBiasAttention(nn.Module):
 
     def _attn(self, q, k, v, b, mask: Optional[Tensor]) -> Tensor:
         """Perform attention update"""
+        if self.use_xformers:
+            from xformers.ops import memory_efficient_attention
+
+            attn_bias = b if isinstance(b, Tensor) else None
+            if exists(mask):
+                dtype = attn_bias.dtype if attn_bias is not None else q.dtype
+                mask_bias = torch.where(
+                    rearrange(mask, "b i j -> b () i j"),
+                    torch.zeros(1, dtype=dtype, device=q.device),
+                    torch.finfo(dtype).min,
+                )
+                attn_bias = (
+                    mask_bias if attn_bias is None else attn_bias + mask_bias
+                )
+            return memory_efficient_attention(
+                q, k, v, attn_bias=attn_bias, scale=self.scale
+            )
         sim = einsum("b h i d, b h j d -> b h i j", q, k) * self.scale
         if exists(mask):
             mask = rearrange(mask, "b i j -> b () i j")
@@ -127,7 +146,7 @@ class MultiHeadBiasedAttentionADALN_MM(torch.nn.Module):
     """Pair biased multi-head self-attention with adaptive layer norm applied to input
     and adaptive scaling applied to output."""
 
-    def __init__(self, dim_token, dim_pair, nheads, dim_cond, use_qkln):
+    def __init__(self, dim_token, dim_pair, nheads, dim_cond, use_qkln, use_xformers=False):
         super().__init__()
         dim_head = int(dim_token // nheads)
         self.adaln = AdaptiveLayerNorm(dim=dim_token, dim_cond=dim_cond)
@@ -139,6 +158,7 @@ class MultiHeadBiasedAttentionADALN_MM(torch.nn.Module):
             dim_out=dim_token,
             qkln=use_qkln,
             pair_dim=dim_pair,
+            use_xformers=use_xformers,
         )
         self.scale_output = AdaptiveOutputScale(dim=dim_token, dim_cond=dim_cond)
 
