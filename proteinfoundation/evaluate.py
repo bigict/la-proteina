@@ -115,11 +115,15 @@ def compute_traditional_metrics(
     # Configure evaluation modes and models
     designability_modes = cfg_metric.get("designability_modes", ["ca"])
     designability_folding_models = cfg_metric.get("designability_folding_models", ["esmfold"])
-    designability_motif_eval = cfg_metric.get("designability_motif_eval", False)
+    designability_motif_eval = cfg_metric.compute_designability and cfg_metric.get(
+        "designability_motif_eval", False
+    )
 
     codesignability_modes = cfg_metric.get("codesignability_modes", ["ca", "bb3o", "all_atom"])
     codesignability_folding_models = cfg_metric.get("codesignability_folding_models", ["esmfold"])
-    codesignability_motif_eval = cfg_metric.get("codesignability_motif_eval", False)
+    codesignability_motif_eval = cfg_metric.compute_codesignability and cfg_metric.get(
+        "codesignability_motif_eval", False
+    )
 
     # Check if any motif evaluation is needed
     is_motif_task = "motif_task_name" in cfg.generation.dataset
