@@ -4,42 +4,42 @@
 import argparse
 import csv
 import re
+from itertools import permutations
 from pathlib import Path
 
 import numpy as np
+from Bio.Align import PairwiseAligner
 from Bio.PDB import PDBParser
 
-AA = {"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL"}
+AA1 = {"ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P", "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V"}
+AA = set(AA1)
 DNA = {"DA", "DC", "DG", "DT", "DI", "A", "C", "G", "T"}
-BB = ("P", "O5'", "C5'", "C4'", "C3'", "O3'", "C1'")
+DNA1 = {name: name[-1] for name in DNA}
+BB = ("P", "O5'", "C5'", "C4'", "C3'", "O3'")
 
 
-def chains(path):
+def load_complex(path):
     model = next(PDBParser(QUIET=True).get_structure("x", str(path)).get_models())
     protein, dna = [], []
     for chain in model:
-        names = {r.resname.strip().upper() for r in chain if not r.id[0].strip()}
+        chain_residues = []
+        for residue in chain:
+            if residue.id[0].strip() or residue.id[2] != " ":
+                continue
+            chain_residues.append((residue.resname.strip().upper(), {
+                atom.get_name().strip(): np.asarray(atom.coord, dtype=float)
+                for atom in residue.get_unpacked_list()
+                if not atom.get_name().strip().startswith("H")
+            }))
+        names = {residue[0] for residue in chain_residues}
         if names <= AA and names:
-            protein.append(chain.id)
+            protein.append(chain_residues)
         elif names <= DNA and names:
-            dna.append(chain.id)
+            dna.append(chain_residues)
     # TODO: support complexes with multiple protein or nucleic-acid chains.
     if len(protein) != 1 or len(dna) != 2:
-        raise ValueError(f"expected 1 protein + 2 DNA chains, got {protein} + {dna}")
+        raise ValueError(f"expected 1 protein + 2 DNA chains, got {len(protein)} + {len(dna)}")
     return protein[0], dna
-
-
-def residues(path, chain_id):
-    model = next(PDBParser(QUIET=True).get_structure("x", str(path)).get_models())
-    result = []
-    for residue in model[chain_id]:
-        if residue.id[0].strip() or residue.id[2] != " ":
-            continue
-        result.append((residue.resname.strip().upper(), {
-            a.get_name().strip(): np.asarray(a.coord, dtype=float)
-            for a in residue.get_unpacked_list() if not a.get_name().strip().startswith("H")
-        }))
-    return result
 
 
 def kabsch(x, y):
@@ -52,6 +52,23 @@ def kabsch(x, y):
         u[:, -1] *= -1
         r = u @ vt
     return r, cy - cx @ r
+
+
+def rmsd(x, y):
+    return float(np.sqrt(np.mean(np.sum((np.asarray(x) - np.asarray(y)) ** 2, axis=1))))
+
+
+def align_residues(generated, reference, alphabet):
+    aligner = PairwiseAligner()
+    aligner.mode = "global"
+    aligner.match_score, aligner.mismatch_score = 2, -1
+    aligner.open_gap_score, aligner.extend_gap_score = -10, -0.5
+    alignment = aligner.align(
+        "".join(alphabet[r[0]] for r in generated),
+        "".join(alphabet[r[0]] for r in reference),
+    )[0]
+    return [(i, j) for (a, b), (c, d) in zip(*alignment.aligned)
+            for i, j in zip(range(a, b), range(c, d))]
 
 
 def contacts(protein, dna, cutoff=4.5):
@@ -70,37 +87,62 @@ def f1(pred, true):
     return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
 
 
-def evaluate(generated, reference):
-    gp, gd = chains(generated)
-    rp, rd = chains(reference)
-    gpro, rpro = residues(generated, gp), residues(reference, rp)
-    gna, rna = [residues(generated, c) for c in gd], [residues(reference, c) for c in rd]
-    if len(gpro) != len(rpro) or any(len(g) != len(r) for g, r in zip(gna, rna)):
-        raise ValueError("generated/reference chain lengths differ")
-    pairs = [(g[1]["CA"], r[1]["CA"]) for g, r in zip(gpro, rpro) if "CA" in g[1] and "CA" in r[1]]
-    rotation, translation = kabsch(*map(np.asarray, zip(*pairs)))
+def evaluate_dna_pairing(gna, rna, pairing, protein, reference_protein,
+                         gen_to_ref, rotation, translation):
     backbone_g, backbone_r, all_g, all_r = [], [], [], []
     native_map, generated_map = set(), set()
-    for chain_i, (gchain, rchain) in enumerate(zip(gna, rna)):
-        native_map |= {(p, (chain_i, n)) for p, n in contacts(rpro, rchain)}
-        generated_map |= {(p, (chain_i, n)) for p, n in contacts(gpro, gchain)}
-        for g, r in zip(gchain, rchain):
+    mapped_ref = set(gen_to_ref.values())
+    same_base_count = 0
+    for generated_i, reference_i in enumerate(pairing):
+        generated_chain, reference_chain = gna[generated_i], rna[reference_i]
+        dna_pairs = align_residues(generated_chain, reference_chain, DNA1)
+        dna_to_ref = dict(dna_pairs)
+        mapped_ref_dna = set(dna_to_ref.values())
+        native_map |= {(p, (reference_i, n)) for p, n in contacts(reference_protein, reference_chain)
+                       if p in mapped_ref and n in mapped_ref_dna}
+        generated_map |= {(gen_to_ref[p], (reference_i, dna_to_ref[n]))
+                          for p, n in contacts(protein, generated_chain)
+                          if p in gen_to_ref and n in dna_to_ref}
+        for i, j in dna_pairs:
+            generated_residue, reference_residue = generated_chain[i], reference_chain[j]
             for name in BB:
-                if name in g[1] and name in r[1]:
-                    backbone_g.append(g[1][name] @ rotation + translation)
-                    backbone_r.append(r[1][name])
-            if g[0] == r[0]:
-                for name in set(g[1]) & set(r[1]):
-                    all_g.append(g[1][name] @ rotation + translation)
-                    all_r.append(r[1][name])
-    if not native_map or not backbone_g:
+                if name in generated_residue[1] and name in reference_residue[1]:
+                    backbone_g.append(generated_residue[1][name])
+                    backbone_r.append(reference_residue[1][name])
+            if DNA1[generated_residue[0]] == DNA1[reference_residue[0]]:
+                same_base_count += 1
+                for name in sorted(set(generated_residue[1]) & set(reference_residue[1])):
+                    all_g.append(generated_residue[1][name])
+                    all_r.append(reference_residue[1][name])
+    if not native_map or len(backbone_g) < 3:
         raise ValueError("reference interface or DNA backbone is empty")
+    backbone_g = np.asarray(backbone_g)
+    backbone_r = np.asarray(backbone_r)
+    protein_aligned_backbone = backbone_g @ rotation + translation
+    dna_rotation, dna_translation = kabsch(backbone_g, backbone_r)
     return {
-        "protein_aligned_na_backbone_rmsd": float(np.sqrt(np.mean((np.asarray(backbone_g) - backbone_r) ** 2))),
-        "protein_aligned_na_all_atom_rmsd": float(np.sqrt(np.mean((np.asarray(all_g) - all_r) ** 2))) if all_g else float("nan"),
+        "protein_aligned_na_backbone_rmsd": rmsd(protein_aligned_backbone, backbone_r),
+        "protein_aligned_na_same_base_all_atom_rmsd": rmsd(np.asarray(all_g) @ rotation + translation, all_r) if all_g else float("nan"),
+        "na_same_base_residue_coverage": same_base_count / sum(map(len, rna)),
+        "na_alone_backbone_rmsd": rmsd(backbone_g @ dna_rotation + dna_translation, backbone_r),
         "protein_interface_f1": f1({p for p, _ in generated_map}, {p for p, _ in native_map}),
         "contact_map_f1": f1(generated_map, native_map),
+        "dna_chain_pairing": ",".join(map(str, pairing)),
     }
+
+
+def evaluate(generated, reference):
+    gpro, gna = load_complex(generated)
+    rpro, rna = load_complex(reference)
+    residue_pairs = align_residues(gpro, rpro, AA1)
+    pairs = [(gpro[i][1]["CA"], rpro[j][1]["CA"]) for i, j in residue_pairs
+             if "CA" in gpro[i][1] and "CA" in rpro[j][1]]
+    rotation, translation = kabsch(*map(np.asarray, zip(*pairs)))
+    gen_to_ref = dict(residue_pairs)
+    candidates = [evaluate_dna_pairing(gna, rna, pairing, gpro, rpro, gen_to_ref,
+                                       rotation, translation)
+                  for pairing in permutations(range(2))]
+    return min(candidates, key=lambda result: result["protein_aligned_na_backbone_rmsd"])
 
 
 def main():
