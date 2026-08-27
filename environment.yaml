@@ -41,6 +41,7 @@ dependencies:
     - scikit-learn
     - seaborn
     - xarray
+    - xformers
 
 
 # To create the full environment, run at the end:

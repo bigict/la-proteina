@@ -73,6 +73,7 @@ class EncoderTransformer(torch.nn.Module):
                     parallel_mha_transition=False,
                     use_attn_pair_bias=True,
                     use_qkln=kwargs["encoder"]["use_qkln"],
+                    use_xformers=kwargs["encoder"].get("use_xformers", False),
                 )
                 for _ in range(self.nlayers)
             ]

@@ -84,6 +84,7 @@ class DecoderTransformer(torch.nn.Module):
                     parallel_mha_transition=False,
                     use_attn_pair_bias=True,
                     use_qkln=self.use_qkln,
+                    use_xformers=kwargs["decoder"].get("use_xformers", False),
                 )
                 for _ in range(self.nlayers)
             ]
