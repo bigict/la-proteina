@@ -200,10 +200,16 @@ def compute_traditional_metrics(
         res_row = list(flat_dict.values()) + [i, pdb_path, n]
         results.append(res_row)
 
-        # create tmp_dir for this sample
+        # Create a temporary directory only for metrics that actually use it.
         tmp_dir = os.path.splitext(pdb_path)[0]  # removes extension ".pdb"
-        assert not os.path.exists(tmp_dir), f"tmp_dir {tmp_dir} already exists"
-        os.makedirs(tmp_dir, exist_ok=False)
+        needs_tmp_dir = (
+            cfg_metric.compute_designability
+            or cfg_metric.compute_codesignability
+            or cfg_metric.compute_co_sequence_recovery
+        )
+        if needs_tmp_dir:
+            assert not os.path.exists(tmp_dir), f"tmp_dir {tmp_dir} already exists"
+            os.makedirs(tmp_dir, exist_ok=False)
 
         # Initialize motif-related variables
         motif_index = None
@@ -404,8 +410,13 @@ if __name__ == "__main__":
 
     cfg_metric = cfg.generation.metric
     
-    # Code for designability
-    if cfg_metric.compute_designability:
+    # Traditional metrics, including direct motif-only evaluation.
+    if (
+        cfg_metric.compute_designability
+        or cfg_metric.compute_codesignability
+        or cfg_metric.compute_co_sequence_recovery
+        or cfg_metric.get("compute_motif_rmsd", False)
+    ):
         gen_njobs = cfg.get("gen_njobs", 1)
         eval_njobs = cfg.get("eval_njobs", 1)
         assert (
