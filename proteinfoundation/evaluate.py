@@ -254,11 +254,7 @@ def compute_traditional_metrics(
             #######################################################
 
             # Get motif index for ProteinMPNN fixing and sequence recovery
-            from openfold.np.residue_constants import restype_num, restype_order
-
-            gen_residue_type = torch.as_tensor(
-                [restype_order.get(r, restype_num) for r in seq]
-            )
+            gen_residue_type = torch.as_tensor(gen_prot.aatype)
             logger.info(f"Gen residue type: {gen_residue_type.shape}")
             motif_sequence_mask = motif_mask_full.any(dim=1)
 
