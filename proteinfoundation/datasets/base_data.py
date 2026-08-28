@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import json
 from typing import Callable, Dict, Iterable, List, Literal, Optional
 
 import lightning as L
@@ -7,6 +8,7 @@ from torch_geometric import transforms as T
 from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 
+from openfold.np import residue_constants as rc
 from proteinfoundation.utils.cluster_utils import ClusterSampler
 from proteinfoundation.utils.dense_padding_data_loader import DensePaddingDataLoader
 
@@ -66,6 +68,7 @@ class BaseLightningDataModule(L.LightningDataModule, ABC):
         self.val_ds = None
         self.test_ds = None
         self.clusterid_to_seqid_mappings = None  # for cluster sampling
+        logger.info(f"restype_list = {json.dumps(rc.restype_list)}")
 
     def setup(self, stage: Optional[str] = None):
         if stage == "fit" or stage is None:

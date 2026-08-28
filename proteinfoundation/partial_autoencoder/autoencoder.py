@@ -11,10 +11,14 @@ from loguru import logger
 from sklearn.decomposition import PCA
 from torch import Tensor
 
+from openfold.np import residue_constants as rc
+from openfold.utils.feats import atom_gather
 from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
 from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.loss_utils import token_level_w
+from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 
 COLORS_RT = [
@@ -100,6 +104,9 @@ class AutoEncoder(L.LightningModule):
             amsgrad=True,
             weight_decay=1e-2,
         )
+        if hasattr(self.cfg_ae.opt, "scheduler"):
+            scheduler = get_scheduler(optimizer=optimizer, **self.cfg_ae.opt.scheduler)
+            return [optimizer], [scheduler]
         return optimizer
 
     def on_save_checkpoint(self, checkpoint):
@@ -127,6 +134,8 @@ class AutoEncoder(L.LightningModule):
         z_latent: Float[torch.Tensor, "b n d"],
         ca_coors_nm: Float[torch.Tensor, "b n 3"],
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
+        apply_residue_type_filter: bool = False,
     ) -> Dict:
         """
         Runs the decoder and returns a dictionary with all necessary decoding information.
@@ -135,9 +144,12 @@ class AutoEncoder(L.LightningModule):
             "z_latent": z_latent,
             "ca_coors_nm": ca_coors_nm,
             "residue_mask": mask,
+            "residue_type": residue_type,
             "mask": mask,
         }
-        output_dec = self.decoder(input_decoder)
+        output_dec = self.decoder(
+            input_decoder, apply_residue_type_filter=apply_residue_type_filter
+        )
         mask = output_dec["residue_mask"]  # [b, n]
         atom_mask = output_dec["atom_mask"]  # [b, n, 37]
         coors_nm = (
@@ -168,7 +180,16 @@ class AutoEncoder(L.LightningModule):
 
         mask = batch["mask_dict"]["coords"][..., 0, 0]  # [b, n] boolean
         batch["mask"] = mask
-        ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        #ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        ca_coors_nm = atom_gather(batch["coords_nm"], ca_idx, -2)
         ca_coors_nm = ca_coors_nm * mask[..., None]  # [b, n, 3]
         bs, n = mask.shape[0], mask.shape[1]
 
@@ -219,6 +240,7 @@ class AutoEncoder(L.LightningModule):
         input_decoder = {
             "z_latent": output_enc["z_latent"],
             "ca_coors_nm": ca_coors_nm,
+            "residue_type": aatype,
             "residue_mask": mask,
             "mask": mask,
         }
@@ -255,7 +277,7 @@ class AutoEncoder(L.LightningModule):
             self.compute_kl_penalty(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask,
+                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
                 w=self.cfg_ae.loss.kl.weight * f,
             )
         )
@@ -270,6 +292,16 @@ class AutoEncoder(L.LightningModule):
                 weight=self.cfg_ae.loss.struct.weight,
             )
         )
+
+        # Structure smooth lddt
+        if self.cfg_ae.loss.get("lddt"):
+            losses.update(
+                self.compute_struct_lddt_loss(
+                    output_dec=output_dec,
+                    batch=batch,
+                    weight=self.cfg_ae.loss.lddt.weight,
+                )
+            )
 
         # Sequence loss
         losses.update(
@@ -301,7 +333,7 @@ class AutoEncoder(L.LightningModule):
             componentwise_kl = self._per_component_kl(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask,
+                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
             )  # [b, n, d]
             self.log_tensor_statistics(
                 bs=bs,
@@ -320,7 +352,7 @@ class AutoEncoder(L.LightningModule):
             )
             # KL per aa type
             if per_aatype_kl and self.global_step % histogram_every_n == 2000:
-                for i in range(20):
+                for i in range(rc.restype_num):
                     self.log_tensor_statistics(
                         bs=bs,
                         v=(componentwise_kl > 0.1) * 1.0,
@@ -339,6 +371,45 @@ class AutoEncoder(L.LightningModule):
         if val_step:
             return train_loss, output_dec
         return train_loss
+
+    def compute_struct_lddt_loss(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        weight: float = 1.0,
+    ) -> Dict[str, Float[Tensor, "b"]]:
+        coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
+        coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+        mask = output_dec["residue_mask"]  # [b, n] boolean
+        atom_mask_true = batch["coord_mask"] * mask[..., None]  # [b, n, 37] boolean
+
+        err = torch.abs(
+            torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
+        )  # [b, n, 37, 37]
+
+        losses = {}
+
+        # Convert pairwise distance error to Å for SmoothLDDT thresholds
+        err_ang = nm_to_ang(err)  # [b, n, 37, 37]
+
+
+        cdist_mask = mask[..., None, None] * (
+            atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
+        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
+        score = 0.25 * sum(
+            cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
+        )  # [b, n, 37, 37]
+
+        reduce_dim = (-3, -2, -1)
+        w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
+        score = torch.sum(score * w[..., None, None], dim=reduce_dim) / (
+            torch.sum(cdist_mask * w[..., None, None], dim=reduce_dim) + 1e-9
+        )  # [b]
+
+        err = 1. - score
+        losses["struct_lddt"] = err * weight
+        losses["struct_lddt_justlog"] = err * weight
+        return losses
 
     def compute_struct_rec_loss(
         self,
@@ -370,14 +441,15 @@ class AutoEncoder(L.LightningModule):
         """
 
         def reduce_37(
-            err: Float[torch.Tensor, "b n 37 3"],
+            err: Float[torch.Tensor, f"b n {rc.atom_type_num} 3"],
             mask: Bool[torch.Tensor, "b n"],
-            atom_mask: Bool[torch.Tensor, "b n 37"],
+            atom_mask: Bool[torch.Tensor, f"b n {rc.atom_type_num}"],
             mode: Literal["sum", "mean"] = "sum",
         ) -> Float[torch.Tensor, "b"]:
             nres = mask.sum(dim=-1)  # [b]
             nat = atom_mask.sum(dim=-1) * mask  # [b, n]
             err = torch.sum(err, dim=(-1, -2))  # [b, n]
+            err = err * token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             if mode == "mean":
                 err = err / nat  # Take mean over existing atoms if mode == "mean"
             err = err.sum(dim=-1) / nres  # [b]
@@ -454,11 +526,11 @@ class AutoEncoder(L.LightningModule):
             target_aa * mask
         )  # [b, n] gets rid of -1 for padding (issue with cross entropy loss below)
 
-        assert logits_pred.shape[-1] == 20, "Wrong number of logits"
+        assert logits_pred.shape[-1] == rc.restype_num, "Wrong number of logits"
 
         # Compute cross entropy
         b, n = mask.shape[0], mask.shape[1]
-        logits_pred_flat = logits_pred.view(b * n, 20)  # [b * n, 20]
+        logits_pred_flat = logits_pred.view(b * n, rc.restype_num)  # [b * n, 20]
         target_aa_flat = target_aa.view(b * n)  # [b * n]
         seq_loss_flat = torch.nn.functional.cross_entropy(
             input=logits_pred_flat,
@@ -467,6 +539,7 @@ class AutoEncoder(L.LightningModule):
         )  # [b * n]
         seq_loss = seq_loss_flat.view(b, n)  # [b, n]
         seq_loss = seq_loss * mask  # [b, n]
+        seq_loss = seq_loss * token_level_w(target_aa, self.cfg_ae.loss.seq)
         seq_loss = torch.sum(seq_loss, dim=-1) / nres  # [b]
 
         # Compute seq recovery rate
@@ -505,7 +578,7 @@ class AutoEncoder(L.LightningModule):
         """
         Computes KL penalty on the latent Gaussian distribution.
         """
-        nres = torch.sum(mask, dim=-1)  # [b]
+        nres = torch.sum(mask > 0, dim=-1)  # [b]
         kl_div = self._per_component_kl(
             mean=mean,
             log_scale=log_scale,
@@ -588,10 +661,10 @@ class AutoEncoder(L.LightningModule):
         if self.global_step % every_n != 0:
             return
 
-        n_components = 4
         vals = (
             v.clone()[mask].cpu().detach().float().numpy()
         )  # [num of unmasked residues, d]
+        n_components = min(4, vals.shape[0], vals.shape[1])
         vals_pca = PCA(n_components=n_components).fit_transform(
             vals
         )  # [num of unmasked residues, n_components]
@@ -801,7 +874,16 @@ class AutoEncoder(L.LightningModule):
         """
         mask = batch["mask_dict"]["coords"][..., 0, 0]  # [b, n] boolean
         batch["mask"] = mask
-        ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        aatype = batch["residue_type"]  # [b, n]
+        is_na = torch.logical_or(
+            (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+            (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        #ca_coors_nm = batch["coords_nm"][..., 1, :]  # [b, n, 3]
+        ca_coors_nm = atom_gather(batch["coords_nm"], ca_idx, -2)
         ca_coors_nm = ca_coors_nm * mask[..., None]  # [b, n, 3]
 
         output_enc = self.encoder(batch)
@@ -814,9 +896,12 @@ class AutoEncoder(L.LightningModule):
         input_decoder = {
             "z_latent": output_enc["z_latent"],
             "ca_coors_nm": ca_coors_nm,
+            "residue_type": aatype,
             "residue_mask": mask,
             "mask": mask,
         }
+        if "coord_mask" in batch:
+            input_decoder["coord_mask"] = batch["coord_mask"]
         output = self.decoder(input_decoder)
         # {
         #   "coors_nm": all atom coordinates, shape [b, n, 37, 3], in nm

@@ -6,12 +6,14 @@ from typing import Dict, List, Literal, Tuple, Union
 import lightning as L
 import numpy as np
 import torch
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from torch import Tensor
 from omegaconf import OmegaConf
 
+from openfold.np import residue_constants as rc
+from openfold.utils.feats import atom_gather
 from proteinfoundation.flow_matching.product_space_flow_matcher import (
     ProductSpaceFlowMatcher,
 )
@@ -19,6 +21,7 @@ from proteinfoundation.nn.local_latents_transformer import LocalLatentsTransform
 from proteinfoundation.nn.local_latents_transformer_unindexed import LocalLatentsTransformerMotifUidx
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import nm_to_ang, trans_nm_to_atom37
+from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import (
     create_full_prot,
     to_pdb,
@@ -115,6 +118,9 @@ class Proteina(L.LightningModule):
         optimizer = torch.optim.Adam(
             [p for p in self.parameters() if p.requires_grad], lr=self.cfg_exp.opt.lr
         )
+        if hasattr(self.cfg_exp.opt, "scheduler"):
+            scheduler = get_scheduler(optimizer=optimizer, **self.cfg_exp.opt.scheduler)
+            return [optimizer], [scheduler]
         return optimizer
 
     def on_save_checkpoint(self, checkpoint):
@@ -255,6 +261,11 @@ class Proteina(L.LightningModule):
             self.update_n_log_nsamples_processed(bs)
             self.log_nparams()
 
+        if hasattr(self.cfg_exp.loss, "sqrt_length_scale"):
+            length_scaler = torch.sqrt(
+                (torch.mean(torch.sum(batch['mask'], dim=-1) + 1e-6)) / self.cfg_exp.loss.sqrt_length_scale
+            )
+            return train_loss * length_scaler
         return train_loss
 
     def add_clean_samples(self, batch: Dict) -> Dict:
@@ -290,7 +301,16 @@ class Proteina(L.LightningModule):
             Clean sample for the given data mode.
         """
         if dm == "bb_ca":
-            return batch["coords_nm"][:, :, 1, :]  # [b, n, 3]
+            aatype = batch["residue_type"]  # [b, n]
+            is_na = torch.logical_or(
+                (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx),
+                (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+            )
+            ca_idx = torch.where(
+                ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+            )
+            # return batch["coords_nm"][:, :, 1, :]  # [b, n, 3]
+            return atom_gather(batch["coords_nm"], ca_idx, -2)
         elif dm == "local_latents":
             encoded_batch = self.autoencoder.encode(batch)
             # {
@@ -540,6 +560,8 @@ class Proteina(L.LightningModule):
         # extra_info is a dict with additional things, including
         # "mask", whose value is boolean of shape [nsamples, n]
 
+        extra_info["residue_type"] = batch["residue_type"]
+
         # Format the generated samples back to proteins
         sample_prots = self.sample_formatting(
             x=gen_samples,
@@ -551,8 +573,11 @@ class Proteina(L.LightningModule):
 
         generation_list = []
         for i in range(sample_prots["coors"].shape[0]):
+            extra_info = {}
+            if "residue_pdb_idx" in batch:
+                extra_info["residue_index"] = batch["residue_pdb_idx"][i]
             generation_list.append(
-                (sample_prots["coors"][i], sample_prots["residue_type"][i])
+                (sample_prots["coors"][i], sample_prots["residue_type"][i], extra_info)
             )  # Tuple (coors [n, 37, 3], aatype [n])
         return generation_list  # List of tupes (coors [n, 37, 3], aatype [n])
 
@@ -586,11 +611,11 @@ class Proteina(L.LightningModule):
         data_modes = sorted([dm for dm in self.cfg_exp.product_flowmatcher])
         if data_modes == ["bb_ca"]:
             return self._format_sample_bb_ca(
-                x=x, ret_mode=ret_mode, mask=extra_info["mask"]
+                x=x, ret_mode=ret_mode, mask=extra_info["mask"], residue_type=extra_info["residue_type"]
             )
         elif data_modes == ["bb_ca", "local_latents"]:
             return self._format_sample_local_latents(
-                x=x, ret_mode=ret_mode, mask=extra_info["mask"]
+                x=x, ret_mode=ret_mode, mask=extra_info["mask"], residue_type=extra_info["residue_type"]
             )
         else:
             raise NotImplementedError(f"Format {ret_mode} not implemented")
@@ -600,6 +625,7 @@ class Proteina(L.LightningModule):
         x: Dict[str, torch.Tensor],
         ret_mode: str,
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
     ):
         if ret_mode == "samples":
             return x
@@ -655,6 +681,7 @@ class Proteina(L.LightningModule):
         x: Dict[str, torch.Tensor],
         ret_mode: str,
         mask: Bool[torch.Tensor, "b n"],
+        residue_type: Int[torch.Tensor, "b n"],
     ):
         """
         Given a batch of b samples consisting on `bb_ca` and `local_latents` this
@@ -681,8 +708,11 @@ class Proteina(L.LightningModule):
         Returns:
             Sample x in the requested format.
         """
+        apply_residue_type_filter = False
+        if hasattr(self.inf_cfg, "apply_residue_type_filter"):
+            apply_residue_type_filter = self.inf_cfg.apply_residue_type_filter
         output_decoder = self.autoencoder.decode(
-            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask
+            z_latent=x["local_latents"], ca_coors_nm=x["bb_ca"], mask=mask, residue_type=residue_type, apply_residue_type_filter=apply_residue_type_filter
         )
 
         if ret_mode == "samples":
@@ -699,7 +729,7 @@ class Proteina(L.LightningModule):
             pdb_strings = []
 
             coors_atom_37 = (
-                nm_to_ang(output_decoder["coors_nm"]).float().detach().cpu().numpy(),
+                nm_to_ang(output_decoder["coors_nm"]).float().detach().cpu().numpy()
             )  # [b, n, 37, 3]
             residue_type = output_decoder["residue_type"]  # [b, n]
             atom_mask = output_decoder["atom_mask"]  # [b, n, 37]

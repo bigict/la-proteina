@@ -19,6 +19,8 @@ from loguru import logger
 from sklearn.decomposition import PCA
 
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
+from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.pdb_utils import create_chain_index, write_prot_to_pdb
 
 COLORS_RT = [
     "#FF0000",  # Red
@@ -69,6 +71,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
         help="(Optional) Name of directory with config files, if not included uses base inference config.\
             Likely only used when submitting to the cluster with script.",
     )
+    parser.add_argument("config_overrides", type=str, nargs="*", help="Overrides of the config")
     args = parser.parse_args()
 
     # Inference config
@@ -78,6 +81,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
         config_path = "../configs"
     else:
         config_path = f"../configs/{args.config_subdir}"
+    config_path = f"../{config_path}"
 
     with hydra.initialize(config_path, version_base=hydra.__version__):
         # If number provided use it, otherwise name
@@ -85,7 +89,7 @@ def parse_args_and_cfg() -> Tuple[Dict, Dict, str]:
             config_name = f"inf_{args.config_number}"
         else:
             config_name = args.config_name
-        cfg = hydra.compose(config_name=config_name)
+        cfg = hydra.compose(config_name=config_name, overrides=args.config_overrides)
         logger.info(f"Inference config {cfg}")
 
     return args, cfg, config_name
@@ -148,11 +152,17 @@ def load_dataloader(cfg):
         config_path = "../configs/dataset/pdb_multimer"
         config_name = "pdb_multimer_train"
     else:
-        raise ValueError(f"Dataset {cfg.dataset} not implemented")
+        config_path = None
+        # raise ValueError(f"Dataset {cfg.dataset} not implemented")
 
-    with hydra.initialize(config_path, version_base=hydra.__version__):
-        cfg_data = hydra.compose(config_name=config_name)
-        cfg_data["datamodule"]["batch_size"] = cfg.bs
+    if config_path:
+        config_path = f"../{config_path}"
+
+        with hydra.initialize(config_path, version_base=hydra.__version__):
+            cfg_data = hydra.compose(config_name=config_name)
+    else:
+        cfg_data = cfg.dataset
+    cfg_data["datamodule"]["batch_size"] = cfg.bs
 
     datamodule = hydra.utils.instantiate(cfg_data.datamodule)
     datamodule.prepare_data()
@@ -235,6 +245,43 @@ def get_df_stats(df):
     return pd.DataFrame(stats_data)
 
 
+def save_predictions(root_path, predictions, pseudo_linker_length=0):
+    logger.info(f"Saving PDBs we test on")
+
+    for i, (x_in, x_out) in enumerate(predictions):
+        for j in range(len(x_in["id"])):
+            pdb_id = x_in["id"][j]
+
+            mask = x_out["residue_mask"][j]
+            atom_mask = x_out["atom_mask"][j]
+
+            coors_atom37 = nm_to_ang(
+                x_out["coors_nm"][j] * mask[..., None, None] * atom_mask[..., None]
+            )  # [b, n, 37, 3]
+            residue_type = x_out["aatype_max"][j] * mask  # [n, 37, 3] and [n]
+
+            residue_index, chain_index = None, None
+            if "residue_pdb_idx" in x_in:
+                if pseudo_linker_length > 0:
+                    chain_index = create_chain_index(
+                        x_in["residue_pdb_idx"][j].detach().cpu().numpy(),
+                        pseudo_linker_length
+                    )
+                residue_index = x_in["residue_pdb_idx"][j].cpu().numpy()
+
+            # Save generated structure as pdb
+            pdb_path = os.path.join(root_path, f"{pdb_id}_{i}_{j}.pdb")
+            write_prot_to_pdb(
+                prot_pos=coors_atom37.float().detach().cpu().numpy(),
+                aatype=residue_type.detach().cpu().numpy(),
+                residue_index=residue_index,
+                file_path=pdb_path,
+                chain_index=chain_index,
+                overwrite=True,
+                no_indexing=True,
+            )
+
+
 def main() -> None:
     load_dotenv()
 
@@ -273,6 +320,14 @@ def main() -> None:
 
     # Extract PDB ids
     pdb_id = extract_pdb_ids(predictions)  # List of strs
+
+    # Save predictions
+    if cfg.get("save_predictions", False):
+        save_predictions(
+            root_path,
+            predictions,
+            pseudo_linker_length=cfg.dataset.get("pseudo_linker_length", 0)
+        )
 
     # Plot requested stuff
     dir_storages = {}

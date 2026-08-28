@@ -31,6 +31,7 @@ from scipy.spatial.transform import Rotation as Scipy_Rotation
 from torch import Tensor
 
 from openfold.np.residue_constants import (
+    atom_type_num,
     restype_atom14_mask,
     restype_atom14_rigid_group_positions,
     restype_atom14_to_rigid_group,
@@ -48,7 +49,7 @@ ang_to_nm = lambda trans: trans / nm_to_ang_scale
 nm_to_ang = lambda trans: trans * nm_to_ang_scale
 
 
-def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps CA.
 
@@ -59,12 +60,12 @@ def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, 1] which
         is ones (indicates CA).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 1] = True
     return mask.bool()
 
 
-def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps [N CA C].
 
@@ -75,14 +76,14 @@ def get_atom37_bb3_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, [0, 1, 2]] which
         is ones (indicates [N CA C]).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 0] = True
     mask[:, 1] = True
     mask[:, 2] = True
     return mask.bool()
 
 
-def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
+def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:
     """
     Returns an atom37 mask that only keeps [N CA C O].
 
@@ -93,7 +94,7 @@ def get_atom37_bb3o_mask(n: int, device: torch.device) -> Bool[Tensor, "n 37"]:
         Boolean mask of shape [n, 37] where all zeros except [:, [0, 1, 2, 4]] which
         is ones (indicates [N CA C O]).
     """
-    mask = torch.zeros((n, 37), device=device, dtype=torch.bool)  # [n, 37]
+    mask = torch.zeros((n, atom_type_num), device=device, dtype=torch.bool)  # [n, 37]
     mask[:, 0] = True
     mask[:, 1] = True
     mask[:, 2] = True
@@ -165,7 +166,7 @@ def trans_ang_to_atom37(ca_coors):
         Coordinates in atom37 representation
     """
     original_shape = ca_coors.shape  # [*, N, 3]
-    atom37_shape = list(original_shape[:-1]) + [37, original_shape[-1]]  # [*, N, 37, 3]
+    atom37_shape = list(original_shape[:-1]) + [atom_type_num, original_shape[-1]]  # [*, N, 37, 3]
     ca_coors_atom37 = torch.zeros(
         atom37_shape, dtype=ca_coors.dtype, device=ca_coors.device
     )  # [*, N, 37, 3]

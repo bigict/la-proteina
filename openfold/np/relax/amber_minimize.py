@@ -201,9 +201,9 @@ def make_atom14_positions(prot):
     restype_atom37_to_atom14 = []  # mapping (restype, atom37) --> atom14
     restype_atom14_mask = []
 
-    for rt in residue_constants.restypes:
+    for i, rt in enumerate(residue_constants.restypes):
         atom_names = residue_constants.restype_name_to_atom14_names[
-            residue_constants.restype_1to3[rt]
+            residue_constants.restype_1to3[(rt, residue_constants.moltype(i))]
         ]
 
         restype_atom14_to_atom37.append(
@@ -226,9 +226,9 @@ def make_atom14_positions(prot):
         )
 
     # Add dummy mapping for restype 'UNK'.
-    restype_atom14_to_atom37.append([0] * 14)
-    restype_atom37_to_atom14.append([0] * 37)
-    restype_atom14_mask.append([0.0] * 14)
+    restype_atom14_to_atom37.append([0] * residue_constants.atom14_type_num)
+    restype_atom37_to_atom14.append([0] * residue_constants.atom_type_num)
+    restype_atom14_mask.append([0.0] * residue_constants.atom14_type_num)
 
     restype_atom14_to_atom37 = np.array(
         restype_atom14_to_atom37, dtype=int
@@ -268,9 +268,14 @@ def make_atom14_positions(prot):
     prot["residx_atom37_to_atom14"] = residx_atom37_to_atom14.astype(np.int64)
 
     # Create the corresponding mask.
-    restype_atom37_mask = np.zeros([21, 37], dtype=np.float32)
+    restype_atom37_mask = np.zeros(
+        [residue_constants.restype_num + 1, residue_constants.atom_type_num],
+        dtype=np.float32,
+    )
     for restype, restype_letter in enumerate(residue_constants.restypes):
-        restype_name = residue_constants.restype_1to3[restype_letter]
+        restype_name = residue_constants.restype_1to3[
+            (restype_letter, residue_constants.moltype(restype))
+        ]
         atom_names = residue_constants.residue_atoms[restype_name]
         for atom_name in atom_names:
             atom_type = residue_constants.atom_order[atom_name]
@@ -282,15 +287,18 @@ def make_atom14_positions(prot):
     # As the atom naming is ambiguous for 7 of the 20 amino acids, provide
     # alternative ground truth coordinates where the naming is swapped
     restype_3 = [
-        residue_constants.restype_1to3[res]
-        for res in residue_constants.restypes
+        residue_constants.restype_1to3[(res, residue_constants.moltype(i))]
+        for i, res in enumerate(residue_constants.restypes)
     ]
     restype_3 += ["UNK"]
 
     # Matrices for renaming ambiguous atoms.
-    all_matrices = {res: np.eye(14, dtype=np.float32) for res in restype_3}
+    all_matrices = {
+        res: np.eye(residue_constants.atom14_type_num, dtype=np.float32)
+        for res in restype_3
+    }
     for resname, swap in residue_constants.residue_atom_renaming_swaps.items():
-        correspondences = np.arange(14)
+        correspondences = np.arange(residue_constants.atom14_type_num)
         for source_atom_swap, target_atom_swap in swap.items():
             source_index = residue_constants.restype_name_to_atom14_names[
                 resname
@@ -300,7 +308,13 @@ def make_atom14_positions(prot):
             ].index(target_atom_swap)
             correspondences[source_index] = target_index
             correspondences[target_index] = source_index
-            renaming_matrix = np.zeros((14, 14), dtype=np.float32)
+            renaming_matrix = np.zeros(
+                (
+                    residue_constants.atom14_type_num,
+                    residue_constants.atom14_type_num,
+                ),
+                dtype=np.float32,
+            )
             for index, correspondence in enumerate(correspondences):
                 renaming_matrix[index, correspondence] = 1.0
         all_matrices[resname] = renaming_matrix.astype(np.float32)
@@ -328,7 +342,10 @@ def make_atom14_positions(prot):
     prot["atom14_alt_gt_exists"] = alternative_gt_mask
 
     # Create an ambiguous atoms mask.  shape: (21, 14).
-    restype_atom14_is_ambiguous = np.zeros((21, 14), dtype=np.float32)
+    restype_atom14_is_ambiguous = np.zeros(
+        (residue_constants.restype_num + 1, residue_constants.atom14_type_num),
+        dtype=np.float32,
+    )
     for resname, swap in residue_constants.residue_atom_renaming_swaps.items():
         for atom_name1, atom_name2 in swap.items():
             restype = residue_constants.restype_order[
