@@ -349,6 +349,7 @@ def main(cfg_exp) -> None:
     show_prog_bar = show_prog_bar or not is_cluster_run
     trainer = L.Trainer(
         max_epochs=cfg_exp.opt.max_epochs,
+        max_steps=cfg_exp.opt.get("max_steps", -1),
         accelerator=cfg_exp.hardware.accelerator,
         devices=cfg_exp.hardware.ngpus_per_node_,  # This is number of gpus per node, not total
         num_nodes=cfg_exp.hardware.nnodes_,
@@ -367,6 +368,7 @@ def main(cfg_exp) -> None:
         precision=get_training_precision(cfg_exp, is_cluster_run),
         gradient_clip_algorithm="norm",
         gradient_clip_val=1.0,
+        profiler=cfg_exp.get("profiler", None),
     )
     trainer.fit(model, datamodule, ckpt_path=resume_ckpt_path)
     # If resume_ckpt_path is None then it creates a new optimizer
