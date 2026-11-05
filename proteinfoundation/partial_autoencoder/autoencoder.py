@@ -304,6 +304,12 @@ class AutoEncoder(L.LightningModule):
                 )
             )
 
+        # Structure violation metric
+        if self.cfg_ae.loss.get("violation", True):
+            losses.update(
+                self.compute_struct_violation_loss(output_dec=output_dec, batch=batch)
+            )
+
         # Sequence loss
         losses.update(
             self.compute_seq_rec_loss(
@@ -401,8 +407,8 @@ class AutoEncoder(L.LightningModule):
             return t
 
         def _cdist(x: torch.Tensor, dim: int = 1):
-            dim = dim % t.dim()
-            return torch.cdist(x.unsqueeze(dim), _unfold(x, dim=dim))
+            dim = dim % x.dim()
+            return torch.cdist(x.unsqueeze(dim + 1), _unfold(x, dim=dim))
 
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
@@ -412,9 +418,6 @@ class AutoEncoder(L.LightningModule):
         err = torch.abs(
             _cdist(coors_nm_true, dim=-3) - _cdist(coors_nm_pred, dim=-3)
         )  # [b, n, window_size, 37, 37]
-        # err = torch.abs(
-        #     torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
-        # )  # [b, n, 37, 37]
 
         losses = {}
 
@@ -423,21 +426,115 @@ class AutoEncoder(L.LightningModule):
 
 
         cdist_mask = mask[..., None, None, None] * (
-            atom_mask_true[..., None, :, None] * atom_mask_true[..., None, None, :]
-        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, window_size, 37, 37]
+            atom_mask_true[..., None, :, None] * _unfold(
+                atom_mask_true[..., None, :], dim=-3
+            )
+        )  # [b, n, window_size, 37, 37]
         score = 0.25 * sum(
             cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
         )  # [b, n, window_size, 37, 37]
 
         reduce_dim = (-4, -3, -2, -1)
         w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
+        cdist_mask = cdist_mask.expand_as(score)
         score = torch.sum(score * w[..., None, None, None], dim=reduce_dim) / (
             torch.sum(cdist_mask * w[..., None, None, None], dim=reduce_dim) + 1e-9
         )  # [b]
 
         err = 1. - score
         losses["struct_lddt"] = err * weight
-        losses["struct_lddt_justlog"] = err * weight
+        losses["struct_lddt_justlog"] = err
+        return losses
+
+    def compute_struct_violation_loss(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+    ) -> Dict[str, Float[Tensor, "b"]]:
+        aatype = batch["residue_type"]  # [b, n]
+        coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
+        coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+
+        # violation
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+
+        def _violation(
+            coors: torch.Tensor,
+            mask: torch.Tensor,
+            min_dist: float,
+            max_dist: float,
+            prefix: str = "",
+            suffix: str = "_justlog",
+        ):
+            err = coors[..., 1:, :] - coors[..., :-1, :]  # [b, n - 1, 3]
+            err = nm_to_ang(err)  # [b, n - 1, 3]
+
+            eps = 1e-6
+            err = torch.linalg.norm(err, dim=-1)  # [b, n - 1]
+            val = (err >= min_dist) & (err <= max_dist)
+            msk = mask[..., 1:] * mask[..., :-1]  # [b, n - 1]
+            return {
+                f"{prefix}mean{suffix}":  (err * msk).sum(-1) / (msk.sum(-1) + eps),
+                f"{prefix}ratio{suffix}": (val * msk).sum(-1) / (msk.sum(-1) + eps),
+            }
+
+        losses = {}
+        for coor_type, coors in (("pred", coors_nm_pred), ("truth", coors_nm_true)):
+            # 1. C1' - C1' (5.7 - 6.1)   ~5.9 - 6.0 Å (B-DNA) ~5.8 - 5.9 Å (A-RNA)
+            if "C1\'" in rc.atom_order:
+                c1p_idx = rc.atom_order["C1\'"]
+                losses.update(
+                    _violation(
+                        coors[..., c1p_idx, :],
+                        is_dna | is_rna,
+                        min_dist=5.7,
+                        max_dist=6.1,
+                        prefix="NA_C1p_C1p_{coor_type}_",
+                    )
+                )
+            # 2. P - P  ~6.6 - 6.7 Å (B-DNA)  ~5.9 - 6.0 Å (A-RNA)
+            if "P" in rc.atom_order:
+                p_idx = rc.atom_order["P"]
+                losses.update(
+                    _violation(
+                        coors[..., p_idx, :],
+                        is_dna,
+                        min_dist=6.4,
+                        max_dist=6.9,
+                        prefix="DNA_P_P_{coor_type}_",
+                    )
+                )
+                losses.update(
+                    _violation(
+                        coors[..., p_idx, :],
+                        is_rna,
+                        min_dist=5.7,
+                        max_dist=6.2,
+                        prefix="RNA_P_P_{coor_type}_",
+                    )
+                )
+            # 3. C4' - C4' B-DNA (~5.8/5.6 - 6.0 Å) A-RNA (~5.3/5.1 - 5.5 Å)
+            if "C4\'" in rc.atom_order:
+                c4p_idx = rc.atom_order["C4\'"]
+                losses.update(
+                    _violation(
+                        coors[..., c4p_idx, :],
+                        is_dna,
+                        min_dist=5.6,
+                        max_dist=6.0,
+                        prefix="DNA_C4p_C4p_{coor_type}_",
+                    )
+                )
+                losses.update(
+                    _violation(
+                        coors[..., c4p_idx, :],
+                        is_rna,
+                        min_dist=5.1,
+                        max_dist=5.5,
+                        prefix="RNA_C4p_C4p_{coor_type}_",
+                    )
+                )
         return losses
 
     def compute_struct_rec_loss(
