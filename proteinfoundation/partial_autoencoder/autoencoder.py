@@ -299,6 +299,7 @@ class AutoEncoder(L.LightningModule):
                 self.compute_struct_lddt_loss(
                     output_dec=output_dec,
                     batch=batch,
+                    window_size=self.cfg_ae.loss.lddt.get("window_size", 1),
                     weight=self.cfg_ae.loss.lddt.weight,
                 )
             )
@@ -376,16 +377,44 @@ class AutoEncoder(L.LightningModule):
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
+        window_size: int = 1,
         weight: float = 1.0,
     ) -> Dict[str, Float[Tensor, "b"]]:
+        assert window_size >= 1
+
+        def _unfold(t: torch.Tensor, dim: int = 1, pad_value: float = None):
+            dim = dim % t.dim()
+
+            # pad
+            pad = (0, window_size - 1)
+            if pad != (0, 0):
+                pad = (0, 0) * (t.dim() - dim - 1) + pad
+                t = torch.nn.functional.pad(t, pad=pad, value=pad_value)
+            # unfold
+            t = t.unfold(dim, size=window_size, step=1)
+            # permut
+            if dim + 1 < t.dim():
+                dims = (
+                    tuple(range(dim + 1)) + (-1, ) + tuple(range(dim + 1, t.dim() - 1))
+                )
+                t = torch.permute(t, dims)
+            return t
+
+        def _cdist(x: torch.Tensor, dim: int = 1):
+            dim = dim % t.dim()
+            return torch.cdist(x.unsqueeze(dim), _unfold(x, dim=dim))
+
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
         mask = output_dec["residue_mask"]  # [b, n] boolean
         atom_mask_true = batch["coord_mask"] * mask[..., None]  # [b, n, 37] boolean
 
         err = torch.abs(
-            torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
-        )  # [b, n, 37, 37]
+            _cdist(coors_nm_true, dim=-3) - _cdist(coors_nm_pred, dim=-3)
+        )  # [b, n, window_size, 37, 37]
+        # err = torch.abs(
+        #     torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
+        # )  # [b, n, 37, 37]
 
         losses = {}
 
@@ -393,17 +422,17 @@ class AutoEncoder(L.LightningModule):
         err_ang = nm_to_ang(err)  # [b, n, 37, 37]
 
 
-        cdist_mask = mask[..., None, None] * (
-            atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
-        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
+        cdist_mask = mask[..., None, None, None] * (
+            atom_mask_true[..., None, :, None] * atom_mask_true[..., None, None, :]
+        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, window_size, 37, 37]
         score = 0.25 * sum(
             cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
-        )  # [b, n, 37, 37]
+        )  # [b, n, window_size, 37, 37]
 
-        reduce_dim = (-3, -2, -1)
+        reduce_dim = (-4, -3, -2, -1)
         w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
-        score = torch.sum(score * w[..., None, None], dim=reduce_dim) / (
-            torch.sum(cdist_mask * w[..., None, None], dim=reduce_dim) + 1e-9
+        score = torch.sum(score * w[..., None, None, None], dim=reduce_dim) / (
+            torch.sum(cdist_mask * w[..., None, None, None], dim=reduce_dim) + 1e-9
         )  # [b]
 
         err = 1. - score
