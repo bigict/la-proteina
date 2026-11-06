@@ -304,10 +304,10 @@ class AutoEncoder(L.LightningModule):
                 )
             )
 
-        # Structure violation metric
-        if self.cfg_ae.loss.get("violation", True):
+        # Structure distance metrics
+        if self.cfg_ae.loss.get("distance_metrics", True):
             losses.update(
-                self.compute_struct_violation_loss(output_dec=output_dec, batch=batch)
+                self.compute_struct_distance_metrics(output_dec=output_dec, batch=batch)
             )
 
         # Sequence loss
@@ -459,7 +459,7 @@ class AutoEncoder(L.LightningModule):
         losses["struct_lddt_justlog"] = err
         return losses
 
-    def compute_struct_violation_loss(
+    def compute_struct_distance_metrics(
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
@@ -467,87 +467,93 @@ class AutoEncoder(L.LightningModule):
         aatype = batch["residue_type"]  # [b, n]
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+        residue_mask = output_dec["residue_mask"].bool()  # [b, n]
+        coord_mask = batch["coord_mask"].bool()  # [b, n, 37]
 
-        # violation
         is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
         is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
 
-        def _violation(
-            coors: torch.Tensor,
+        def _distance_metrics(
+            coors_pred: torch.Tensor,
+            coors_true: torch.Tensor,
             mask: torch.Tensor,
-            min_dist: float,
-            max_dist: float,
             prefix: str = "",
-            suffix: str = "_justlog",
         ):
-            err = coors[..., 1:, :] - coors[..., :-1, :]  # [b, n - 1, 3]
-            err = nm_to_ang(err)  # [b, n - 1, 3]
+            pred_dist = torch.linalg.norm(
+                nm_to_ang(coors_pred[..., 1:, :] - coors_pred[..., :-1, :]),
+                dim=-1,
+            )  # [b, n - 1]
+            truth_dist = torch.linalg.norm(
+                nm_to_ang(coors_true[..., 1:, :] - coors_true[..., :-1, :]),
+                dim=-1,
+            )  # [b, n - 1]
 
             eps = 1e-6
-            err = torch.linalg.norm(err, dim=-1)  # [b, n - 1]
-            val = (err >= min_dist) & (err <= max_dist)
-            msk = mask[..., 1:] * mask[..., :-1]  # [b, n - 1]
+            pair_mask = mask[..., 1:] & mask[..., :-1]  # [b, n - 1]
+            denominator = pair_mask.sum(-1) + eps
+
+            def _masked_mean(value: torch.Tensor):
+                value = torch.where(pair_mask, value, torch.zeros_like(value))
+                return value.sum(-1) / denominator
+
             return {
-                f"{prefix}mean{suffix}":  (err * msk).sum(-1) / (msk.sum(-1) + eps),
-                f"{prefix}ratio{suffix}": (val * msk).sum(-1) / (msk.sum(-1) + eps),
+                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist),
+                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist),
+                f"{prefix}mae_justlog": _masked_mean(
+                    torch.abs(pred_dist - truth_dist)
+                ),
             }
 
         losses = {}
-        for coor_type, coors in (("pred", coors_nm_pred), ("truth", coors_nm_true)):
-            # 1. C1' - C1' (5.7 - 6.1)   ~5.9 - 6.0 Å (B-DNA) ~5.8 - 5.9 Å (A-RNA)
-            if "C1\'" in rc.atom_order:
-                c1p_idx = rc.atom_order["C1\'"]
-                losses.update(
-                    _violation(
-                        coors[..., c1p_idx, :],
-                        is_dna | is_rna,
-                        min_dist=5.7,
-                        max_dist=6.1,
-                        prefix=f"NA_C1p_C1p_{coor_type}_",
-                    )
+        # Virtual distances are conformation-dependent, so compare prediction to truth.
+        if "C1\'" in rc.atom_order:
+            c1p_idx = rc.atom_order["C1\'"]
+            losses.update(
+                _distance_metrics(
+                    coors_nm_pred[..., c1p_idx, :],
+                    coors_nm_true[..., c1p_idx, :],
+                    (is_dna | is_rna) & residue_mask & coord_mask[..., c1p_idx],
+                    prefix="NA_C1p_C1p_",
                 )
-            # 2. P - P  ~6.6 - 6.7 Å (B-DNA)  ~5.9 - 6.0 Å (A-RNA)
-            if "P" in rc.atom_order:
-                p_idx = rc.atom_order["P"]
-                losses.update(
-                    _violation(
-                        coors[..., p_idx, :],
-                        is_dna,
-                        min_dist=6.4,
-                        max_dist=6.9,
-                        prefix=f"DNA_P_P_{coor_type}_",
-                    )
+            )
+        if "P" in rc.atom_order:
+            p_idx = rc.atom_order["P"]
+            atom_mask = residue_mask & coord_mask[..., p_idx]
+            losses.update(
+                _distance_metrics(
+                    coors_nm_pred[..., p_idx, :],
+                    coors_nm_true[..., p_idx, :],
+                    is_dna & atom_mask,
+                    prefix="DNA_P_P_",
                 )
-                losses.update(
-                    _violation(
-                        coors[..., p_idx, :],
-                        is_rna,
-                        min_dist=5.7,
-                        max_dist=6.2,
-                        prefix=f"RNA_P_P_{coor_type}_",
-                    )
+            )
+            losses.update(
+                _distance_metrics(
+                    coors_nm_pred[..., p_idx, :],
+                    coors_nm_true[..., p_idx, :],
+                    is_rna & atom_mask,
+                    prefix="RNA_P_P_",
                 )
-            # 3. C4' - C4' B-DNA (~5.8/5.6 - 6.0 Å) A-RNA (~5.3/5.1 - 5.5 Å)
-            if "C4\'" in rc.atom_order:
-                c4p_idx = rc.atom_order["C4\'"]
-                losses.update(
-                    _violation(
-                        coors[..., c4p_idx, :],
-                        is_dna,
-                        min_dist=5.6,
-                        max_dist=6.0,
-                        prefix=f"DNA_C4p_C4p_{coor_type}_",
-                    )
+            )
+        if "C4\'" in rc.atom_order:
+            c4p_idx = rc.atom_order["C4\'"]
+            atom_mask = residue_mask & coord_mask[..., c4p_idx]
+            losses.update(
+                _distance_metrics(
+                    coors_nm_pred[..., c4p_idx, :],
+                    coors_nm_true[..., c4p_idx, :],
+                    is_dna & atom_mask,
+                    prefix="DNA_C4p_C4p_",
                 )
-                losses.update(
-                    _violation(
-                        coors[..., c4p_idx, :],
-                        is_rna,
-                        min_dist=5.1,
-                        max_dist=5.5,
-                        prefix=f"RNA_C4p_C4p_{coor_type}_",
-                    )
+            )
+            losses.update(
+                _distance_metrics(
+                    coors_nm_pred[..., c4p_idx, :],
+                    coors_nm_true[..., c4p_idx, :],
+                    is_rna & atom_mask,
+                    prefix="RNA_C4p_C4p_",
                 )
+            )
         return losses
 
     def compute_struct_rec_loss(
