@@ -10,6 +10,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from sklearn.decomposition import PCA
 from torch import Tensor
+from torchmetrics import MeanMetric
 
 from openfold.np import residue_constants as rc
 from openfold.utils.feats import atom_gather
@@ -20,6 +21,17 @@ from proteinfoundation.utils.coors_utils import nm_to_ang
 from proteinfoundation.utils.loss_utils import token_level_w
 from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
+
+
+# Atom offsets 0 and 1 refer to residues i and i+1, respectively.
+NA_BOND_GEOMETRIES = (
+    ("NA_C3p_O3p", ((0, "C3'"), (0, "O3'"))),
+    ("NA_O3p_P", ((0, "O3'"), (1, "P"))),
+    ("NA_P_O5p", ((1, "P"), (1, "O5'"))),
+    ("NA_C3p_O3p_P", ((0, "C3'"), (0, "O3'"), (1, "P"))),
+    ("NA_O3p_P_O5p", ((0, "O3'"), (1, "P"), (1, "O5'"))),
+)
+
 
 COLORS_RT = [
     "#FF0000",  # Red
@@ -84,6 +96,14 @@ class AutoEncoder(L.LightningModule):
         self.validation_rec_samples = []
 
         self.latent_dim = self.cfg_ae.nn_ae["latent_z_dim"]
+        self.na_bond_geometry_metrics = torch.nn.ModuleDict(
+            {
+                f"{stage}_{name}_{stat}": MeanMetric()
+                for stage in ("train", "validation_loss")
+                for name, _ in NA_BOND_GEOMETRIES
+                for stat in ("pred_mean", "truth_mean", "mae")
+            }
+        )
 
     def log_histogram(self, id_log: str, v: Float[torch.Tensor, "r"]):
         """
@@ -299,8 +319,15 @@ class AutoEncoder(L.LightningModule):
                 self.compute_struct_lddt_loss(
                     output_dec=output_dec,
                     batch=batch,
+                    window_size=self.cfg_ae.loss.lddt.get("window_size", 1),
                     weight=self.cfg_ae.loss.lddt.weight,
                 )
+            )
+
+        # Nucleic acid covalent geometry metrics (logging only)
+        if self.cfg_ae.loss.get("na_bond_geometry_metrics", True):
+            self.log_na_bond_geometry_metrics(
+                output_dec=output_dec, batch=batch, log_prefix=log_prefix
             )
 
         # Sequence loss
@@ -376,16 +403,41 @@ class AutoEncoder(L.LightningModule):
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
+        window_size: int = 1,
         weight: float = 1.0,
     ) -> Dict[str, Float[Tensor, "b"]]:
+        assert window_size >= 1
+
+        def _unfold(t: torch.Tensor, dim: int = 1, pad_value: float = None):
+            dim = dim % t.dim()
+
+            # pad
+            pad = (0, window_size - 1)
+            if pad != (0, 0):
+                pad = (0, 0) * (t.dim() - dim - 1) + pad
+                t = torch.nn.functional.pad(t, pad=pad, value=pad_value)
+            # unfold
+            t = t.unfold(dim, size=window_size, step=1)
+            # permut
+            if dim + 1 < t.dim():
+                dims = (
+                    tuple(range(dim + 1)) + (-1, ) + tuple(range(dim + 1, t.dim() - 1))
+                )
+                t = torch.permute(t, dims)
+            return t
+
+        def _cdist(x: torch.Tensor, dim: int = 1):
+            dim = dim % x.dim()
+            return torch.cdist(x.unsqueeze(dim + 1), _unfold(x, dim=dim))
+
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
         mask = output_dec["residue_mask"]  # [b, n] boolean
         atom_mask_true = batch["coord_mask"] * mask[..., None]  # [b, n, 37] boolean
 
         err = torch.abs(
-            torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
-        )  # [b, n, 37, 37]
+            _cdist(coors_nm_true, dim=-3) - _cdist(coors_nm_pred, dim=-3)
+        )  # [b, n, window_size, 37, 37]
 
         losses = {}
 
@@ -393,23 +445,116 @@ class AutoEncoder(L.LightningModule):
         err_ang = nm_to_ang(err)  # [b, n, 37, 37]
 
 
-        cdist_mask = mask[..., None, None] * (
-            atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
-        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
+        # At offset 0, exclude diagonal pairs because each atom is paired with itself.
+        # At offsets > 0, keep diagonal pairs because they belong to different residues.
+        non_self_mask = torch.ones(
+            (window_size, rc.atom_type_num, rc.atom_type_num),
+            dtype=torch.bool,
+            device=mask.device,
+        )
+        non_self_mask[0] = ~torch.eye(
+            rc.atom_type_num,
+            dtype=torch.bool,
+            device=mask.device,
+        )
+
+        cdist_mask = mask[..., None, None, None] * (
+            atom_mask_true[..., None, :, None] * _unfold(
+                atom_mask_true[..., None, :], dim=-3
+            )
+        ) * non_self_mask[None, None, ...]  # [b, n, window_size, 37, 37]
         score = 0.25 * sum(
             cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
-        )  # [b, n, 37, 37]
+        )  # [b, n, window_size, 37, 37]
 
-        reduce_dim = (-3, -2, -1)
+        reduce_dim = (-4, -3, -2, -1)
         w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
-        score = torch.sum(score * w[..., None, None], dim=reduce_dim) / (
-            torch.sum(cdist_mask * w[..., None, None], dim=reduce_dim) + 1e-9
+        cdist_mask = cdist_mask.expand_as(score)
+        score = torch.sum(score * w[..., None, None, None], dim=reduce_dim) / (
+            torch.sum(cdist_mask * w[..., None, None, None], dim=reduce_dim) + 1e-9
         )  # [b]
 
         err = 1. - score
         losses["struct_lddt"] = err * weight
-        losses["struct_lddt_justlog"] = err * weight
+        losses["struct_lddt_justlog"] = err
         return losses
+
+    @torch.no_grad()
+    def log_na_bond_geometry_metrics(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        log_prefix: str,
+    ) -> None:
+        aatype = batch["residue_type"]  # [b, n]
+        coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
+        coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+        residue_mask = output_dec["residue_mask"].bool()  # [b, n]
+        coord_mask = batch["coord_mask"].bool()  # [b, n, 37]
+
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        is_na = is_dna | is_rna
+        pair_mask = (
+            is_na[..., :-1]
+            & is_na[..., 1:]
+            & residue_mask[..., :-1]
+            & residue_mask[..., 1:]
+        )
+        # Pseudo linkers and missing residues produce gaps in residue_pdb_idx.
+        pair_mask = pair_mask & (
+            batch["residue_pdb_idx"][..., 1:]
+            - batch["residue_pdb_idx"][..., :-1]
+            == 1
+        )
+
+        def _geometry(coors: torch.Tensor, atoms):
+            positions = [
+                coors[..., :-1, rc.atom_order[name], :]
+                if offset == 0
+                else coors[..., 1:, rc.atom_order[name], :]
+                for offset, name in atoms
+            ]
+            if len(positions) == 2:
+                return torch.linalg.norm(
+                    nm_to_ang(positions[0] - positions[1]), dim=-1
+                )
+
+            # Bond angle at the middle atom, reported in degrees.
+            u = positions[0] - positions[1]
+            v = positions[2] - positions[1]
+            cross_norm = torch.linalg.norm(torch.linalg.cross(u, v, dim=-1), dim=-1)
+            dot = torch.sum(u * v, dim=-1)
+            return torch.rad2deg(torch.atan2(cross_norm, dot))
+
+        for name, atoms in NA_BOND_GEOMETRIES:
+            valid = pair_mask.clone()
+            for offset, atom_name in atoms:
+                atom_idx = rc.atom_order[atom_name]
+                valid = valid & (
+                    coord_mask[..., :-1, atom_idx]
+                    if offset == 0
+                    else coord_mask[..., 1:, atom_idx]
+                )
+
+            pred = _geometry(coors_nm_pred, atoms)
+            truth = _geometry(coors_nm_true, atoms)
+            for stat, values in (
+                ("pred_mean", pred),
+                ("truth_mean", truth),
+                ("mae", torch.abs(pred - truth)),
+            ):
+                metric = self.na_bond_geometry_metrics[f"{log_prefix}_{name}_{stat}"]
+                metric.update(values[valid].detach())
+                self.log(
+                    f"{log_prefix}/loss_{name}_{stat}",
+                    metric,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                    logger=True,
+                    add_dataloader_idx=False,
+                )
 
     def compute_struct_rec_loss(
         self,
