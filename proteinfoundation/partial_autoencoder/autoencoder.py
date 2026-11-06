@@ -10,6 +10,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from loguru import logger
 from sklearn.decomposition import PCA
 from torch import Tensor
+from torchmetrics import MeanMetric
 
 from openfold.np import residue_constants as rc
 from openfold.utils.feats import atom_gather
@@ -20,6 +21,17 @@ from proteinfoundation.utils.coors_utils import nm_to_ang
 from proteinfoundation.utils.loss_utils import token_level_w
 from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
+
+
+# Atom offsets 0 and 1 refer to residues i and i+1, respectively.
+NA_BOND_GEOMETRIES = (
+    ("NA_C3p_O3p", ((0, "C3'"), (0, "O3'"))),
+    ("NA_O3p_P", ((0, "O3'"), (1, "P"))),
+    ("NA_P_O5p", ((1, "P"), (1, "O5'"))),
+    ("NA_C3p_O3p_P", ((0, "C3'"), (0, "O3'"), (1, "P"))),
+    ("NA_O3p_P_O5p", ((0, "O3'"), (1, "P"), (1, "O5'"))),
+)
+
 
 COLORS_RT = [
     "#FF0000",  # Red
@@ -84,6 +96,14 @@ class AutoEncoder(L.LightningModule):
         self.validation_rec_samples = []
 
         self.latent_dim = self.cfg_ae.nn_ae["latent_z_dim"]
+        self.na_bond_geometry_metrics = torch.nn.ModuleDict(
+            {
+                f"{stage}_{name}_{stat}": MeanMetric()
+                for stage in ("train", "validation_loss")
+                for name, _ in NA_BOND_GEOMETRIES
+                for stat in ("pred_mean", "truth_mean", "mae")
+            }
+        )
 
     def log_histogram(self, id_log: str, v: Float[torch.Tensor, "r"]):
         """
@@ -304,10 +324,10 @@ class AutoEncoder(L.LightningModule):
                 )
             )
 
-        # Structure distance metrics
-        if self.cfg_ae.loss.get("distance_metrics", True):
-            losses.update(
-                self.compute_struct_distance_metrics(output_dec=output_dec, batch=batch)
+        # Nucleic acid covalent geometry metrics (logging only)
+        if self.cfg_ae.loss.get("na_bond_geometry_metrics", True):
+            self.log_na_bond_geometry_metrics(
+                output_dec=output_dec, batch=batch, log_prefix=log_prefix
             )
 
         # Sequence loss
@@ -459,11 +479,13 @@ class AutoEncoder(L.LightningModule):
         losses["struct_lddt_justlog"] = err
         return losses
 
-    def compute_struct_distance_metrics(
+    @torch.no_grad()
+    def log_na_bond_geometry_metrics(
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
-    ) -> Dict[str, Float[Tensor, "b"]]:
+        log_prefix: str,
+    ) -> None:
         aatype = batch["residue_type"]  # [b, n]
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
@@ -472,147 +494,67 @@ class AutoEncoder(L.LightningModule):
 
         is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
         is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        is_na = is_dna | is_rna
+        pair_mask = (
+            is_na[..., :-1]
+            & is_na[..., 1:]
+            & residue_mask[..., :-1]
+            & residue_mask[..., 1:]
+        )
+        # Pseudo linkers and missing residues produce gaps in residue_pdb_idx.
+        pair_mask = pair_mask & (
+            batch["residue_pdb_idx"][..., 1:]
+            - batch["residue_pdb_idx"][..., :-1]
+            == 1
+        )
 
-        def _masked_mean(value: torch.Tensor, mask: torch.Tensor):
-            denominator = mask.sum(-1).clamp_min(1)
-            value = torch.where(mask, value, torch.zeros_like(value))
-            return value.sum(-1) / denominator
+        def _geometry(coors: torch.Tensor, atoms):
+            positions = [
+                coors[..., :-1, rc.atom_order[name], :]
+                if offset == 0
+                else coors[..., 1:, rc.atom_order[name], :]
+                for offset, name in atoms
+            ]
+            if len(positions) == 2:
+                return torch.linalg.norm(
+                    nm_to_ang(positions[0] - positions[1]), dim=-1
+                )
 
-        def _distance_metrics(
-            coors_pred: torch.Tensor,
-            coors_true: torch.Tensor,
-            mask: torch.Tensor,
-            prefix: str = "",
-        ):
-            pred_dist = torch.linalg.norm(
-                nm_to_ang(coors_pred[..., 1:, :] - coors_pred[..., :-1, :]),
-                dim=-1,
-            )  # [b, n - 1]
-            truth_dist = torch.linalg.norm(
-                nm_to_ang(coors_true[..., 1:, :] - coors_true[..., :-1, :]),
-                dim=-1,
-            )  # [b, n - 1]
+            # Bond angle at the middle atom, reported in degrees.
+            u = positions[0] - positions[1]
+            v = positions[2] - positions[1]
+            cross_norm = torch.linalg.norm(torch.linalg.cross(u, v, dim=-1), dim=-1)
+            dot = torch.sum(u * v, dim=-1)
+            return torch.rad2deg(torch.atan2(cross_norm, dot))
 
-            pair_mask = mask[..., 1:] & mask[..., :-1]  # [b, n - 1]
-            return {
-                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist, pair_mask),
-                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist, pair_mask),
-                f"{prefix}mae_justlog": _masked_mean(
-                    torch.abs(pred_dist - truth_dist), pair_mask
-                ),
-            }
+        for name, atoms in NA_BOND_GEOMETRIES:
+            valid = pair_mask.clone()
+            for offset, atom_name in atoms:
+                atom_idx = rc.atom_order[atom_name]
+                valid = valid & (
+                    coord_mask[..., :-1, atom_idx]
+                    if offset == 0
+                    else coord_mask[..., 1:, atom_idx]
+                )
 
-        def _bond_violation_metrics(
-            atom1_pred: torch.Tensor,
-            atom2_pred: torch.Tensor,
-            atom1_true: torch.Tensor,
-            atom2_true: torch.Tensor,
-            pair_mask: torch.Tensor,
-            ideal_length: float,
-            stddev: float,
-            outlier_z: float,
-            prefix: str,
-        ):
-            pred_dist = torch.linalg.norm(
-                nm_to_ang(atom1_pred - atom2_pred), dim=-1
-            )
-            truth_dist = torch.linalg.norm(
-                nm_to_ang(atom1_true - atom2_true), dim=-1
-            )
-            pred_is_outlier = torch.abs(pred_dist - ideal_length) > outlier_z * stddev
-            truth_is_outlier = (
-                torch.abs(truth_dist - ideal_length) > outlier_z * stddev
-            )
-            return {
-                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist, pair_mask),
-                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist, pair_mask),
-                f"{prefix}pred_violation_ratio_justlog": _masked_mean(
-                    pred_is_outlier.float(), pair_mask
-                ),
-                f"{prefix}truth_violation_ratio_justlog": _masked_mean(
-                    truth_is_outlier.float(), pair_mask
-                ),
-            }
-
-        losses = {}
-        # Virtual distances are conformation-dependent, so compare prediction to truth.
-        if "C1\'" in rc.atom_order:
-            c1p_idx = rc.atom_order["C1\'"]
-            losses.update(
-                _distance_metrics(
-                    coors_nm_pred[..., c1p_idx, :],
-                    coors_nm_true[..., c1p_idx, :],
-                    (is_dna | is_rna) & residue_mask & coord_mask[..., c1p_idx],
-                    prefix="NA_C1p_C1p_",
+            pred = _geometry(coors_nm_pred, atoms)
+            truth = _geometry(coors_nm_true, atoms)
+            for stat, values in (
+                ("pred_mean", pred),
+                ("truth_mean", truth),
+                ("mae", torch.abs(pred - truth)),
+            ):
+                metric = self.na_bond_geometry_metrics[f"{log_prefix}_{name}_{stat}"]
+                metric.update(values[valid].detach())
+                self.log(
+                    f"{log_prefix}/loss_{name}_{stat}",
+                    metric,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=False,
+                    logger=True,
+                    add_dataloader_idx=False,
                 )
-            )
-        if "P" in rc.atom_order:
-            p_idx = rc.atom_order["P"]
-            atom_mask = residue_mask & coord_mask[..., p_idx]
-            losses.update(
-                _distance_metrics(
-                    coors_nm_pred[..., p_idx, :],
-                    coors_nm_true[..., p_idx, :],
-                    is_dna & atom_mask,
-                    prefix="DNA_P_P_",
-                )
-            )
-            losses.update(
-                _distance_metrics(
-                    coors_nm_pred[..., p_idx, :],
-                    coors_nm_true[..., p_idx, :],
-                    is_rna & atom_mask,
-                    prefix="RNA_P_P_",
-                )
-            )
-        if "C4\'" in rc.atom_order:
-            c4p_idx = rc.atom_order["C4\'"]
-            atom_mask = residue_mask & coord_mask[..., c4p_idx]
-            losses.update(
-                _distance_metrics(
-                    coors_nm_pred[..., c4p_idx, :],
-                    coors_nm_true[..., c4p_idx, :],
-                    is_dna & atom_mask,
-                    prefix="DNA_C4p_C4p_",
-                )
-            )
-            losses.update(
-                _distance_metrics(
-                    coors_nm_pred[..., c4p_idx, :],
-                    coors_nm_true[..., c4p_idx, :],
-                    is_rna & atom_mask,
-                    prefix="RNA_C4p_C4p_",
-                )
-            )
-
-        # PDB target for the covalent O3'(i)-P(i+1) bond: 1.607 +/- 0.012 A.
-        # Current PDB validation classifies |Z| > 5 as an outlier.
-        if "O3\'" in rc.atom_order and "P" in rc.atom_order:
-            o3p_idx = rc.atom_order["O3\'"]
-            p_idx = rc.atom_order["P"]
-            is_na = is_dna | is_rna
-            pair_mask = (
-                is_na[..., :-1]
-                & is_na[..., 1:]
-                & residue_mask[..., :-1]
-                & residue_mask[..., 1:]
-                & coord_mask[..., :-1, o3p_idx]
-                & coord_mask[..., 1:, p_idx]
-            )
-            losses.update(
-                _bond_violation_metrics(
-                    coors_nm_pred[..., :-1, o3p_idx, :],
-                    coors_nm_pred[..., 1:, p_idx, :],
-                    coors_nm_true[..., :-1, o3p_idx, :],
-                    coors_nm_true[..., 1:, p_idx, :],
-                    pair_mask,
-                    ideal_length=1.607,
-                    stddev=0.012,
-                    outlier_z=5.0,
-                    prefix="NA_O3p_P_",
-                )
-            )
-        return losses
 
     def compute_struct_rec_loss(
         self,
