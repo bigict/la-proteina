@@ -473,6 +473,11 @@ class AutoEncoder(L.LightningModule):
         is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
         is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
 
+        def _masked_mean(value: torch.Tensor, mask: torch.Tensor):
+            denominator = mask.sum(-1).clamp_min(1)
+            value = torch.where(mask, value, torch.zeros_like(value))
+            return value.sum(-1) / denominator
+
         def _distance_metrics(
             coors_pred: torch.Tensor,
             coors_true: torch.Tensor,
@@ -488,19 +493,44 @@ class AutoEncoder(L.LightningModule):
                 dim=-1,
             )  # [b, n - 1]
 
-            eps = 1e-6
             pair_mask = mask[..., 1:] & mask[..., :-1]  # [b, n - 1]
-            denominator = pair_mask.sum(-1) + eps
-
-            def _masked_mean(value: torch.Tensor):
-                value = torch.where(pair_mask, value, torch.zeros_like(value))
-                return value.sum(-1) / denominator
-
             return {
-                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist),
-                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist),
+                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist, pair_mask),
+                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist, pair_mask),
                 f"{prefix}mae_justlog": _masked_mean(
-                    torch.abs(pred_dist - truth_dist)
+                    torch.abs(pred_dist - truth_dist), pair_mask
+                ),
+            }
+
+        def _bond_violation_metrics(
+            atom1_pred: torch.Tensor,
+            atom2_pred: torch.Tensor,
+            atom1_true: torch.Tensor,
+            atom2_true: torch.Tensor,
+            pair_mask: torch.Tensor,
+            ideal_length: float,
+            stddev: float,
+            outlier_z: float,
+            prefix: str,
+        ):
+            pred_dist = torch.linalg.norm(
+                nm_to_ang(atom1_pred - atom2_pred), dim=-1
+            )
+            truth_dist = torch.linalg.norm(
+                nm_to_ang(atom1_true - atom2_true), dim=-1
+            )
+            pred_is_outlier = torch.abs(pred_dist - ideal_length) > outlier_z * stddev
+            truth_is_outlier = (
+                torch.abs(truth_dist - ideal_length) > outlier_z * stddev
+            )
+            return {
+                f"{prefix}pred_mean_justlog": _masked_mean(pred_dist, pair_mask),
+                f"{prefix}truth_mean_justlog": _masked_mean(truth_dist, pair_mask),
+                f"{prefix}pred_violation_ratio_justlog": _masked_mean(
+                    pred_is_outlier.float(), pair_mask
+                ),
+                f"{prefix}truth_violation_ratio_justlog": _masked_mean(
+                    truth_is_outlier.float(), pair_mask
                 ),
             }
 
@@ -552,6 +582,34 @@ class AutoEncoder(L.LightningModule):
                     coors_nm_true[..., c4p_idx, :],
                     is_rna & atom_mask,
                     prefix="RNA_C4p_C4p_",
+                )
+            )
+
+        # PDB target for the covalent O3'(i)-P(i+1) bond: 1.607 +/- 0.012 A.
+        # Current PDB validation classifies |Z| > 5 as an outlier.
+        if "O3\'" in rc.atom_order and "P" in rc.atom_order:
+            o3p_idx = rc.atom_order["O3\'"]
+            p_idx = rc.atom_order["P"]
+            is_na = is_dna | is_rna
+            pair_mask = (
+                is_na[..., :-1]
+                & is_na[..., 1:]
+                & residue_mask[..., :-1]
+                & residue_mask[..., 1:]
+                & coord_mask[..., :-1, o3p_idx]
+                & coord_mask[..., 1:, p_idx]
+            )
+            losses.update(
+                _bond_violation_metrics(
+                    coors_nm_pred[..., :-1, o3p_idx, :],
+                    coors_nm_pred[..., 1:, p_idx, :],
+                    coors_nm_true[..., :-1, o3p_idx, :],
+                    coors_nm_true[..., 1:, p_idx, :],
+                    pair_mask,
+                    ideal_length=1.607,
+                    stddev=0.012,
+                    outlier_z=5.0,
+                    prefix="NA_O3p_P_",
                 )
             )
         return losses
