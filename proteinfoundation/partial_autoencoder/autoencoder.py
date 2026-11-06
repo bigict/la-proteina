@@ -425,11 +425,24 @@ class AutoEncoder(L.LightningModule):
         err_ang = nm_to_ang(err)  # [b, n, 37, 37]
 
 
+        # At offset 0, exclude diagonal pairs because each atom is paired with itself.
+        # At offsets > 0, keep diagonal pairs because they belong to different residues.
+        non_self_mask = torch.ones(
+            (window_size, rc.atom_type_num, rc.atom_type_num),
+            dtype=torch.bool,
+            device=mask.device,
+        )
+        non_self_mask[0] = ~torch.eye(
+            rc.atom_type_num,
+            dtype=torch.bool,
+            device=mask.device,
+        )
+
         cdist_mask = mask[..., None, None, None] * (
             atom_mask_true[..., None, :, None] * _unfold(
                 atom_mask_true[..., None, :], dim=-3
             )
-        )  # [b, n, window_size, 37, 37]
+        ) * non_self_mask[None, None, ...]  # [b, n, window_size, 37, 37]
         score = 0.25 * sum(
             cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
         )  # [b, n, window_size, 37, 37]
@@ -490,7 +503,7 @@ class AutoEncoder(L.LightningModule):
                         is_dna | is_rna,
                         min_dist=5.7,
                         max_dist=6.1,
-                        prefix="NA_C1p_C1p_{coor_type}_",
+                        prefix=f"NA_C1p_C1p_{coor_type}_",
                     )
                 )
             # 2. P - P  ~6.6 - 6.7 Å (B-DNA)  ~5.9 - 6.0 Å (A-RNA)
@@ -502,7 +515,7 @@ class AutoEncoder(L.LightningModule):
                         is_dna,
                         min_dist=6.4,
                         max_dist=6.9,
-                        prefix="DNA_P_P_{coor_type}_",
+                        prefix=f"DNA_P_P_{coor_type}_",
                     )
                 )
                 losses.update(
@@ -511,7 +524,7 @@ class AutoEncoder(L.LightningModule):
                         is_rna,
                         min_dist=5.7,
                         max_dist=6.2,
-                        prefix="RNA_P_P_{coor_type}_",
+                        prefix=f"RNA_P_P_{coor_type}_",
                     )
                 )
             # 3. C4' - C4' B-DNA (~5.8/5.6 - 6.0 Å) A-RNA (~5.3/5.1 - 5.5 Å)
@@ -523,7 +536,7 @@ class AutoEncoder(L.LightningModule):
                         is_dna,
                         min_dist=5.6,
                         max_dist=6.0,
-                        prefix="DNA_C4p_C4p_{coor_type}_",
+                        prefix=f"DNA_C4p_C4p_{coor_type}_",
                     )
                 )
                 losses.update(
@@ -532,7 +545,7 @@ class AutoEncoder(L.LightningModule):
                         is_rna,
                         min_dist=5.1,
                         max_dist=5.5,
-                        prefix="RNA_C4p_C4p_{coor_type}_",
+                        prefix=f"RNA_C4p_C4p_{coor_type}_",
                     )
                 )
         return losses
