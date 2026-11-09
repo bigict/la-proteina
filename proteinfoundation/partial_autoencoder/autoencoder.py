@@ -27,7 +27,7 @@ from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
 NA_BOND_GEOMETRIES = (
     ("NA_C3p_O3p", ((0, "C3'"), (0, "O3'"))),
     ("NA_O3p_P", ((0, "O3'"), (1, "P"))),
-    ("NA_P_O5p", ((1, "P"), (1, "O5'"))),
+    ("NA_P_O5p", ((0, "P"), (0, "O5'"))),
     ("NA_C3p_O3p_P", ((0, "C3'"), (0, "O3'"), (1, "P"))),
     ("NA_O3p_P_O5p", ((0, "O3'"), (1, "P"), (1, "O5'"))),
 )
@@ -508,13 +508,14 @@ class AutoEncoder(L.LightningModule):
             == 1
         )
 
-        def _geometry(coors: torch.Tensor, atoms):
-            positions = [
-                coors[..., :-1, rc.atom_order[name], :]
-                if offset == 0
-                else coors[..., 1:, rc.atom_order[name], :]
-                for offset, name in atoms
-            ]
+        def _geometry(coors: torch.Tensor, atoms, uses_next_residue: bool):
+            positions = []
+            for offset, name in atoms:
+                atom_coors = coors[..., rc.atom_order[name], :]
+                # Align i with i+1; intra-residue bonds keep every residue.
+                if uses_next_residue:
+                    atom_coors = atom_coors[:, :-1] if offset == 0 else atom_coors[:, 1:]
+                positions.append(atom_coors)
             if len(positions) == 2:
                 return torch.linalg.norm(
                     nm_to_ang(positions[0] - positions[1]), dim=-1
@@ -528,17 +529,21 @@ class AutoEncoder(L.LightningModule):
             return torch.rad2deg(torch.atan2(cross_norm, dot))
 
         for name, atoms in NA_BOND_GEOMETRIES:
-            valid = pair_mask.clone()
+            residue_offsets = [offset for offset, _ in atoms]
+            uses_next_residue = 1 in residue_offsets
+            # Only bonds involving i+1 need the adjacent-residue mask.
+            valid = pair_mask.clone() if uses_next_residue else is_na & residue_mask
             for offset, atom_name in atoms:
                 atom_idx = rc.atom_order[atom_name]
-                valid = valid & (
-                    coord_mask[..., :-1, atom_idx]
-                    if offset == 0
-                    else coord_mask[..., 1:, atom_idx]
-                )
+                atom_present = coord_mask[..., atom_idx]
+                if uses_next_residue:
+                    atom_present = (
+                        atom_present[:, :-1] if offset == 0 else atom_present[:, 1:]
+                    )
+                valid = valid & atom_present
 
-            pred = _geometry(coors_nm_pred, atoms)
-            truth = _geometry(coors_nm_true, atoms)
+            pred = _geometry(coors_nm_pred, atoms, uses_next_residue)
+            truth = _geometry(coors_nm_true, atoms, uses_next_residue)
             for stat, values in (
                 ("pred_mean", pred),
                 ("truth_mean", truth),
