@@ -480,12 +480,11 @@ class AutoEncoder(L.LightningModule):
         return losses
 
     @torch.no_grad()
-    def log_na_bond_geometry_metrics(
+    def compute_na_bond_geometry_values(
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
-        log_prefix: str,
-    ) -> None:
+    ):
         aatype = batch["residue_type"]  # [b, n]
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
@@ -528,6 +527,7 @@ class AutoEncoder(L.LightningModule):
             dot = torch.sum(u * v, dim=-1)
             return torch.rad2deg(torch.atan2(cross_norm, dot))
 
+        geometry_values = {}
         for name, atoms in NA_BOND_GEOMETRIES:
             residue_offsets = [offset for offset, _ in atoms]
             uses_next_residue = 1 in residue_offsets
@@ -544,6 +544,19 @@ class AutoEncoder(L.LightningModule):
 
             pred = _geometry(coors_nm_pred, atoms, uses_next_residue)
             truth = _geometry(coors_nm_true, atoms, uses_next_residue)
+            geometry_values[name] = pred, truth, valid
+        return geometry_values
+
+    @torch.no_grad()
+    def log_na_bond_geometry_metrics(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        log_prefix: str,
+    ) -> None:
+        for name, (pred, truth, valid) in self.compute_na_bond_geometry_values(
+            output_dec, batch
+        ).items():
             for stat, values in (
                 ("pred_mean", pred),
                 ("truth_mean", truth),
