@@ -2,7 +2,9 @@ from typing import Dict
 
 import einops
 import torch
+from torch.nn import functional as F
 
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import RESTYPE_ATOM37_MASK
 from proteinfoundation.nn.feature_factory import FeatureFactory
 from proteinfoundation.nn.modules.attn_n_transition import MultiheadAttnAndTransition
@@ -82,6 +84,7 @@ class DecoderTransformer(torch.nn.Module):
                     parallel_mha_transition=False,
                     use_attn_pair_bias=True,
                     use_qkln=self.use_qkln,
+                    use_checkpoint=kwargs["decoder"].get("use_checkpoint", False),
                 )
                 for _ in range(self.nlayers)
             ]
@@ -106,14 +109,16 @@ class DecoderTransformer(torch.nn.Module):
 
         self.logit_linear = torch.nn.Sequential(
             torch.nn.LayerNorm(self.token_dim),
-            torch.nn.Linear(self.token_dim, 20, bias=False),
+            torch.nn.Linear(self.token_dim, rc.restype_num, bias=False),
         )
         self.struct_linear = torch.nn.Sequential(
             torch.nn.LayerNorm(self.token_dim),
-            torch.nn.Linear(self.token_dim, int(37 * 3), bias=False),
+            torch.nn.Linear(self.token_dim, int(rc.atom_type_num * 3), bias=False),
         )
 
-    def forward(self, input: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def forward(
+        self, input: Dict[str, torch.Tensor], apply_residue_type_filter: bool = False
+    ) -> Dict[str, torch.Tensor]:
         """
         Runs the network.
 
@@ -135,6 +140,7 @@ class DecoderTransformer(torch.nn.Module):
             }
         """
         ca_coors_nm = input["ca_coors_nm"]  # [b, n, 3]
+        aatype = input["residue_type"]  # [b, n] boolean
         mask = input["residue_mask"]  # [b, n] boolean
 
         # Conditioning variables
@@ -166,23 +172,51 @@ class DecoderTransformer(torch.nn.Module):
         # Get coordinates
         coors_flat_nm = self.struct_linear(seqs) * mask[..., None]  # [b, n, 37 * 3]
         coors_a37_nm = einops.rearrange(
-            coors_flat_nm, "b n (a t) -> b n a t", a=37, t=3
+            coors_flat_nm, "b n (a t) -> b n a t", a=rc.atom_type_num, t=3
         )  # [b, n, 37, 3]
 
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+        is_na = torch.logical_or(is_dna, is_rna)  # [b, n]
+        ca_idx = torch.where(
+            ~is_na, rc.atom_order["CA"], rc.atom_order.get("P", rc.atom_order["CA"])
+        )
+        ca_mask = F.one_hot(ca_idx, num_classes=rc.atom_type_num)[..., None]  # [b, n, 37, 1]
         if self.abs_coors:
-            coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+            # coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0 + ca_coors_nm
+            coors_a37_nm = coors_a37_nm * (1 - ca_mask) + ca_coors_nm[..., None, :] * ca_mask
         else:
-            coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0
-            coors_a37_nm = coors_a37_nm + ca_coors_nm[:, :, None, :]  # [b, n, 37, 3]
+            # coors_a37_nm[..., 1, :] = coors_a37_nm[..., 1, :] * 0.0
+            # coors_a37_nm = coors_a37_nm + ca_coors_nm[:, :, None, :]  # [b, n, 37, 3]
+            coors_a37_nm = coors_a37_nm * (1 - ca_mask) + ca_coors_nm[..., None, :]
 
         # Get sequence
         aatype_max = torch.argmax(logits_out, dim=-1)  # [b, n]
+        if apply_residue_type_filter:
+            logits_mask = torch.zeros(
+                len(rc.restype_list), rc.restype_num, device=logits_out.device
+            )
+            logits_mask[rc.PROT - 1, rc.prot_from_idx: rc.prot_to_idx + 1] = 1.
+            if -1 < rc.dna_from_idx < rc.dna_to_idx:
+                logits_mask[rc.DNA - 1, rc.dna_from_idx: rc.dna_to_idx] = 1.
+            if -1 < rc.rna_from_idx < rc.rna_to_idx:
+                logits_mask[rc.RNA - 1, rc.rna_from_idx: rc.rna_to_idx] = 1.
+            residue_type_idx = torch.where(
+                ~is_na, rc.PROT - 1, torch.where(is_dna, rc.DNA - 1, rc.RNA - 1)
+            )
+            logits_mask = logits_mask[residue_type_idx]
+            aatype_max = torch.argmax(
+                logits_out * logits_mask + torch.min(logits_out) * (1. - logits_mask),
+                dim=-1,
+            )  # [b,, n]
         aatype_max = aatype_max * mask  # [b, n]
 
         # Get atom_mask
         aa_a37_mask = get_atom_mask(device=logits_out.device)  # [21, 37] boolean
         atom_mask = aa_a37_mask[aatype_max, :]  # [b, n, 37] boolean
         atom_mask = atom_mask * mask[..., None]  # [b, n, 37] boolean
+        if "coord_mask" in input:
+            atom_mask = atom_mask * input["coord_mask"]  # [b, n, 37] boolean
 
         output = {
             "coors_nm": coors_a37_nm,  # [b, n, 37, 3]

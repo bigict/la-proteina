@@ -6,6 +6,7 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 
 from proteinfoundation.flow_matching.rdn_flow_matcher import RDNFlowMatcher
+from proteinfoundation.utils.loss_utils import token_level_w
 
 FLOW_MATCHER_FACTORY = {
     "bb_ca": RDNFlowMatcher,
@@ -217,8 +218,14 @@ class ProductSpaceFlowMatcher(L.LightningModule):
             is identified by its name (str) and is the loss per element in the batch (i.e. before mean
             reduction).
         """
-        fm_loss = self.compute_fm_loss(batch, nn_out)
-        aux_loss = self.compute_aux_loss(batch, nn_out)
+        weight = {
+            data_mode: token_level_w(
+                batch["residue_type"], self.cfg_exp.product_flowmatcher[data_mode]
+            ) if "residue_type" in batch else None
+            for data_mode in self.data_modes
+        }
+        fm_loss = self.compute_fm_loss(batch, nn_out, weight)
+        aux_loss = self.compute_aux_loss(batch, nn_out, weight)
         loss = {**fm_loss, **aux_loss}
         return loss
 
@@ -226,6 +233,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         self,
         batch: Dict,
         nn_out: Dict[str, Dict[str, Tensor]],
+        weight: Dict[str, Float[Tensor, "* n"]],
     ) -> Dict[str, Float[Tensor, "*"]]:
         """
         Computes flow matching loss for all modalities.
@@ -245,6 +253,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                 mask=batch["mask"],
                 t=batch["t"][data_mode],
                 nn_out=nn_out[data_mode],
+                w=weight.get(data_mode),
             )
             for data_mode in self.data_modes
         }
@@ -254,6 +263,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
         self,
         batch: Dict,
         nn_out: Dict[str, Dict[str, Tensor]],
+        weight: Dict[str, Float[Tensor, "* n"]],
     ) -> Dict[str, Float[Tensor, "*"]]:
         """
         Computes auxiliary loss (if any). This is done here, and not in each specific flow matcher,
@@ -280,6 +290,7 @@ class ProductSpaceFlowMatcher(L.LightningModule):
                     mask=mask_losses,
                     t=batch["t"][data_mode],
                     nn_out=nn_out[data_mode],
+                    w=weight.get(data_mode),
                 )
                 for data_mode in self.data_modes
             }

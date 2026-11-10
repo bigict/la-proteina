@@ -1,3 +1,5 @@
+import collections
+import multiprocessing as mp
 import pathlib
 from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
@@ -8,6 +10,7 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data
 from tqdm import tqdm
 
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import resname_to_idx
 from proteinfoundation.datasets.base_data import BaseLightningDataModule
 from proteinfoundation.utils.cluster_utils import (
@@ -22,8 +25,114 @@ from proteinfoundation.utils.cluster_utils import (
 from proteinfoundation.utils.constants import PDB_TO_OPENFOLD_INDEX_TENSOR
 
 from graphein.ml.datasets import PDBManager
-from graphein.protein.tensor.io import protein_to_pyg
+from graphein.protein import graphs, tensor
 from graphein.protein.utils import download_pdb_multiprocessing
+
+
+def protein_to_pyg(
+    path: str,
+    chain_selection: str = "all",
+    deprotonate: bool = True,
+    keep_insertions: bool = True,
+    keep_hets: List[str] = [],
+    model_index: int = 1,
+    atom_types: List[str] = rc.atom_types,
+    remove_nonstandard: bool = True,
+    store_het: bool = False,
+    store_bfactor: bool = False,
+    fill_value_coords: float = 1e-5,
+) -> Data:
+    path = pathlib.Path(path)
+    # Get ID
+    pid = (
+         path.stem
+         + "_"
+         + "".join(chain_selection)
+         if chain_selection != "all"
+         else path.stem
+    )
+    df = graphs.read_pdb_to_dataframe(path=path, model_index=model_index)
+    if chain_selection != "all":
+        if isinstance(chain_selection, str):
+            chain_selection = [chain_selection]
+        df = graphs.select_chains(df, chain_selection)
+    if deprotonate:
+        df = graphs.deprotonate_structure(df)
+    if not keep_insertions:
+        df = graphs.remove_insertions(df)
+    # Remove hetatms
+    hets = graphs.filter_hetatms(df, keep_hets=keep_hets)
+
+    if store_het:
+        hetatms = df.loc[df.record_name == "HETATM"]
+        all_hets = list(set(hetatms.residue_name))
+        het_data = collections.defaultdict(dict)
+        for het in all_hets:
+            het_data[het]["coords"] = torch.tensor(
+                hetatms.loc[hetatms.residue_name == het][
+                    ["x_coord", "y_coord", "z_coord"]
+                ].values
+            )
+            het_data[het]["atoms"] = hetatms.loc[hetatms.residue_name == het][
+                "atom_name"
+            ].values
+            het_data[het]["residue_number"] = torch.tensor(
+                hetatms.loc[hetatms.residue_name == het][
+                    "residue_number"
+                ].values
+            )
+            het_data[het]["element_symbol"] = hetatms.loc[
+                hetatms.residue_name == het
+            ]["element_symbol"].values
+        df = df.loc[df.record_name == "ATOM"]
+    if remove_nonstandard:
+        df = df.loc[df.residue_name.isin(rc.restype_1to3.values())]
+    df = pd.concat([df] + hets)
+    #df = graphs.sort_dataframe(df)
+
+    df["residue_id"] = (
+        df["chain_id"]
+        + ":"
+        + df["residue_name"]
+        + ":"
+        + df["residue_number"].astype(str)
+    )
+    if keep_insertions:
+        df["residue_id"] = df.residue_id + ":" + df.insertion
+
+    out = Data(
+        coords=tensor.io.protein_df_to_tensor(
+            df,
+            atoms_to_keep=atom_types,
+            fill_value=fill_value_coords,
+        ),
+        residues=tensor.sequence.get_sequence(
+            df,
+            chains=chain_selection,
+            insertions=keep_insertions,
+            list_of_three=True,
+        ),
+        id=pid,
+        residue_id=tensor.sequence.get_residue_id(df),
+        residue_type=tensor.sequence.residue_type_tensor(
+            df,
+            vocabulary=rc.restypes,
+            three_to_one_mapping={k: v[0] for k, v in rc.restype_3to1.items()}
+        ),
+        chains=tensor.io.protein_df_to_chain_tensor(df),
+    )
+
+    if store_het:
+        out.hetatms = [het_data]
+
+    if store_bfactor:
+        # group by residue_id and average b_factor per residue
+        residue_bfactors = df.groupby("residue_id")["b_factor"].mean(
+            numeric_only=True
+        )
+        out.bfactor = torch.from_numpy(residue_bfactors.values)
+
+    return out
 
 
 class PDBDataSelector:
@@ -212,7 +321,7 @@ class PDBDataSelector:
         mask = ~pdb_manager.df["id"].isin(all_exclude_ids)
         pdb_manager.df = pdb_manager.df[mask]
         logger.info(f"{len(pdb_manager.df)} chains remaining")
-        self.df_data = pdb_manager.df
+        self.df_data = pdb_manager.df.reset_index()
         return self.df_data
 
 
@@ -388,8 +497,10 @@ class PDBDataset(Dataset):
             graph = torch.load(self.data_dir / "processed" / fname, weights_only=False)
 
         # reorder coords to be in OpenFold and not PDB convention
+        """
         graph.coords = graph.coords[:, PDB_TO_OPENFOLD_INDEX_TENSOR, :]
         graph.coord_mask = graph.coord_mask[:, PDB_TO_OPENFOLD_INDEX_TENSOR]
+        """
 
         if self.transform:
             graph = self.transform(graph)
@@ -500,9 +611,11 @@ class PDBLightningDataModule(BaseLightningDataModule):
                 )
                 self._download_structure_data(df_data["pdb"].tolist())
                 # process pdb files into seperate chains and save processed objects as .pt files
-                self._process_structure_data(
+                df_idx = self._process_structure_data(
                     df_data["pdb"].tolist(), df_data["chain"].tolist()
                 )
+                logger.info(f"Dataset created with {len(df_idx)} entries failed.")
+                df_data = df_data[~df_data.index.isin(df_idx)]
 
                 # save df_data to disk for later use (in splitting, dataloading etc)
                 logger.info(f"Saving dataset csv to {df_data_name}")
@@ -518,10 +631,13 @@ class PDBLightningDataModule(BaseLightningDataModule):
                 logger.info(f"{df_data_name} does not exist yet, creating dataset now.")
                 df_data = self._load_pdb_folder_data(self.raw_dir)
                 # process pdb files into seperate chains and save processed objects as .pt files
-                self._process_structure_data(
+                df_idx = self._process_structure_data(
                     pdb_codes=df_data["pdb"].tolist(),
                     chains=None,
                 )
+                logger.info(f"Dataset created with {len(df_idx)} entries failed.")
+                df_data = df_data[~df_data.index.isin(df_idx)]
+
                 # save df_data to disk for later use (in splitting, dataloading etc)
                 logger.info(f"Saving dataset csv to {df_data_name}")
                 df_data.to_csv(self.data_dir / df_data_name, index=False)
@@ -536,6 +652,13 @@ class PDBLightningDataModule(BaseLightningDataModule):
         Returns:
             pd.DataFrame: DataFrame with 'pdb' column containing filenames
         """
+        def _get_sequence(path):
+            df = graphs.read_pdb_to_dataframe(path=path)
+            residues = tensor.sequence.get_sequence(df, list_of_three=True)
+            return "".join(
+                [rc.restype_3to1.get(res, ("X", rc.PROT))[0] for res in residues]
+            )
+
         # Get all files with the specified format extension
         pdb_files = list(data_dir.glob(f"*.{self.format}"))
         
@@ -543,6 +666,7 @@ class PDBLightningDataModule(BaseLightningDataModule):
         df_data = pd.DataFrame({
             'pdb': [pdb_file.stem for pdb_file in pdb_files],
             'id': [pdb_file.stem for pdb_file in pdb_files],
+            'sequence': [_get_sequence(pdb_file) for pdb_file in pdb_files],
         })
         
         if len(df_data) == 0:
@@ -611,10 +735,19 @@ class PDBLightningDataModule(BaseLightningDataModule):
             ]
 
         file_names = []
-        for tuple_ in tqdm(index_pdb_tuples, desc="Processing structures", unit="file"):
-            result = self._load_and_process_pdb(tuple_)
-            if result is not None:
-                file_names.append(result)
+        # for tuple_ in tqdm(index_pdb_tuples, desc="Processing structures", unit="file"):
+        #     result = self._load_and_process_pdb(tuple_)
+        #    if result is not None:
+        #        file_names.append(result)
+        with mp.Pool(processes=self.num_workers) as p:
+            for i, result in tqdm(
+                p.imap_unordered(self._load_and_process_pdb, index_pdb_tuples, chunksize=128),
+                total=len(index_pdb_tuples),
+                desc="Processing structures",
+                unit="file",
+            ):
+                if result is None:
+                    file_names.append(i)
         
         logger.info("Completed processing.")
         return file_names
@@ -671,7 +804,7 @@ class PDBLightningDataModule(BaseLightningDataModule):
 
         except Exception as e:
             logger.warning(f"Error processing {pdb} {chains}: {e}")
-            return None
+            return i, None
         fname = f"{pdb}.pt" if chains == "all" else f"{pdb}_{chains}.pt"
 
         graph.id = fname.split(".")[0]
@@ -692,10 +825,10 @@ class PDBLightningDataModule(BaseLightningDataModule):
 
         if self.pre_filter:
             if self.pre_filter(graph) is not True:
-                return None
+                return i, None
 
         torch.save(graph, self.processed_dir / fname)
-        return fname
+        return i, fname
 
     def _download_structure_data(self, pdb_codes) -> None:
         if pdb_codes is not None:

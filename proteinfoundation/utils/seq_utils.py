@@ -13,5 +13,5 @@ def seq_batch_3to1(sequences3):
     Returns:
         sequences1: list of strings, where each string is the corresponding sequence in 1-char format.
     """
-    seq_3to1 = lambda seq3: "".join([restype_3to1[c] for c in seq3])
+    seq_3to1 = lambda seq3: "".join([restype_3to1[c][0] for c in seq3])
     return [seq_3to1(seq3) for seq3 in sequences3]

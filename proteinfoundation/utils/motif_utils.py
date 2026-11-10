@@ -9,6 +9,7 @@ import pandas as pd
 import torch
 from loguru import logger
 
+from openfold.np import residue_constants as rc
 from openfold.np.residue_constants import (
     atom_order,
     atom_types,
@@ -46,6 +47,11 @@ def _select_motif_atoms(
     # Define atom indices
     backbone_atoms = [0, 1, 2, 4]  # N, CA, C, O in atom37 format
     ca_index = 1  # CA atom index in atom37 format
+
+    _, mol_type = restype_3to1[residue_name]
+    if mol_type != rc.PROT:
+        backbone_atoms = [atom_order[a] for a in ["OP1", "P", "OP2", "O5\'"]]
+    ca_index = backbone_atoms[1]
     
     if atom_selection_mode == "ca":
         # Select only CA atom if available
@@ -116,7 +122,7 @@ def generate_motif_indices(
             - motif_indices (List[List[int]]): List of indices where motifs are located.
             - out_strs (List[str]): String of motif indices and scaffold lengths.
     """
-    ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+    ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     components = contig.split("/")
     ranges = []
     motif_length = 0
@@ -247,8 +253,8 @@ def extract_motif_from_pdb(
                 seen.add((chain, res_id))
                 unique_residues.append((chain, res_id))
         n_res = len(unique_residues)
-        motif_mask = torch.zeros((n_res, 37), dtype=torch.bool)
-        x_motif = torch.zeros((n_res, 37, 3), dtype=torch.float)
+        motif_mask = torch.zeros((n_res, rc.atom_type_num), dtype=torch.bool)
+        x_motif = torch.zeros((n_res, rc.atom_type_num, 3), dtype=torch.float)
         residue_type = torch.ones((n_res), dtype=torch.int64) * restype_num
         for i, (chain_id, res_id) in enumerate(unique_residues):
             # Find all atom names for this residue in the motif spec
@@ -261,7 +267,7 @@ def extract_motif_from_pdb(
             res_atoms = array[res_mask]
             if len(res_atoms) == 0:
                 continue
-            res_type = restype_3to1.get(res_atoms[0].res_name, "UNK")
+            res_type = restype_3to1.get(res_atoms[0].res_name, ("X", rc.PROT))
             residue_type[i] = restype_order.get(res_type, restype_num)
             for atom in res_atoms:
                 if atom.atom_name in atom_names and atom.atom_name in atom_order:
@@ -275,7 +281,7 @@ def extract_motif_from_pdb(
     else:
         # Otherwise, use the old logic (residue/range based)
         position = position.split("/")
-        ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+        ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         array = strucio.load_structure(pdb_path, model=1)
         motif_array = []
         seen = set()
@@ -312,8 +318,8 @@ def extract_motif_from_pdb(
         n_res = len(unique_residues)
 
         # Initialize output arrays
-        motif_mask = torch.zeros((n_res, 37), dtype=torch.bool)
-        x_motif = torch.zeros((n_res, 37, 3), dtype=torch.float)
+        motif_mask = torch.zeros((n_res, rc.atom_type_num), dtype=torch.bool)
+        x_motif = torch.zeros((n_res, rc.atom_type_num, 3), dtype=torch.float)
         residue_type = torch.ones((n_res), dtype=torch.int64) * restype_num
 
         # Map each residue's atoms to atom37 format
@@ -321,7 +327,7 @@ def extract_motif_from_pdb(
             # Get atoms for this specific residue
             res_mask = (motif.chain_id == chain_id) & (motif.res_id == res_id)
             res_atoms = motif[res_mask]
-            res_type = restype_3to1.get(res_atoms[0].res_name, "UNK")
+            res_type = restype_3to1.get(res_atoms[0].res_name, ("X", rc.PROT))
             residue_type[i] = restype_order.get(res_type, restype_num)
 
             # Get available atom indices for this residue
@@ -372,7 +378,7 @@ def pad_motif_to_full_length(
         x_motif_full (torch.Tensor): Motif positions in atom37 format. (n_full_length, 37, 3)
         residue_type_full (torch.Tensor): Residue types of the motif. (n_full_length)
     """
-    ALPHABET = "ABCDEFGHJKLMNOPQRSTUVWXYZ"
+    ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     components = contig_string.split("/")
     current_position = 1  # Start positions at 1 for 1-based indexing
     motif_index = []
@@ -397,8 +403,8 @@ def pad_motif_to_full_length(
     motif_index = (
         torch.tensor(motif_index, dtype=torch.int64) - 1
     )  # Change to 0-based indexing
-    motif_mask_full = torch.zeros((actual_length, 37), dtype=torch.bool)
-    x_motif_full = torch.zeros((actual_length, 37, 3), dtype=torch.float)
+    motif_mask_full = torch.zeros((actual_length, rc.atom_type_num), dtype=torch.bool)
+    x_motif_full = torch.zeros((actual_length, rc.atom_type_num, 3), dtype=torch.float)
     residue_type_full = torch.ones((actual_length,), dtype=torch.int64) * restype_num
     motif_mask_full[motif_index] = motif_mask
     x_motif_full[motif_index] = x_motif
@@ -494,8 +500,8 @@ def pad_motif_to_full_length_unindexed(
         motif_index = [i for i in range(nres_motif)]
         logger.warning("\n\n\nError during matching, defaulting to the first n residues\n\n\n")
 
-    motif_mask_full = torch.zeros((nres, 37), dtype=torch.bool)
-    x_motif_full = torch.zeros((nres, 37, 3), dtype=torch.float)
+    motif_mask_full = torch.zeros((nres, rc.atom_type_num), dtype=torch.bool)
+    x_motif_full = torch.zeros((nres, rc.atom_type_num, 3), dtype=torch.float)
     residue_type_full = torch.ones((nres,), dtype=torch.int64) * restype_num
     motif_mask_full[motif_index] = motif_mask
     x_motif_full[motif_index] = x_motif
@@ -614,7 +620,7 @@ def parse_motif(
     # print(out_strs)
     for length, motif_index, _ in zip(lengths, motif_indices, out_strs):
         # Construct motif_mask
-        cur_mask = torch.zeros((length, 37), dtype=torch.bool)
+        cur_mask = torch.zeros((length, rc.atom_type_num), dtype=torch.bool)
         assert (
             len(motif_index) == motif_mask.shape[0] == x_motif.shape[0]
         ), f"motif_index: {len(motif_index)}, motif_mask: {motif_mask.shape[0]}, x_motif: {x_motif.shape[0]}, lengths don't match"
@@ -624,7 +630,7 @@ def parse_motif(
         cur_mask[motif_index] = motif_mask
 
         # Construct full structure with zero padding for the scaffold
-        cur_motif = torch.zeros((length, 37, 3), dtype=x_motif.dtype)
+        cur_motif = torch.zeros((length, rc.atom_type_num, 3), dtype=x_motif.dtype)
         cur_motif[motif_index] = x_motif
         cur_residue_type = torch.ones((length), dtype=torch.int64) * restype_num
         cur_residue_type[motif_index] = residue_type

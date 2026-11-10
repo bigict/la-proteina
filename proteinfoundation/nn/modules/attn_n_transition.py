@@ -1,4 +1,5 @@
 import torch
+from torch.utils.checkpoint import checkpoint
 
 from proteinfoundation.nn.modules.pair_bias_attn import MultiHeadBiasedAttentionADALN_MM
 from proteinfoundation.nn.modules.seq_transition_af3 import TransitionADALN
@@ -34,10 +35,12 @@ class MultiheadAttnAndTransition(torch.nn.Module):
         use_qkln,
         dropout=0.0,
         expansion_factor=4,
+        use_checkpoint=False,
     ):
         super().__init__()
         self.parallel = parallel_mha_transition
         self.use_attn_pair_bias = use_attn_pair_bias
+        self.use_checkpoint = use_checkpoint
 
         # If parallel do not allow both layers to have a residual connection since it leads to adding x twice
         if self.parallel and residual_mha and residual_transition:
@@ -59,7 +62,10 @@ class MultiheadAttnAndTransition(torch.nn.Module):
         )
 
     def _apply_mha(self, x, pair_rep, cond, mask):
-        x_attn = self.mhba(x, pair_rep, cond, mask)
+        if torch.is_grad_enabled() and self.use_checkpoint:
+            x_attn = checkpoint(self.mhba, x, pair_rep, cond, mask, use_reentrant=False)
+        else:
+            x_attn = self.mhba(x, pair_rep, cond, mask)
         if self.residual_mha:
             x_attn = x_attn + x
         return x_attn * mask[..., None]

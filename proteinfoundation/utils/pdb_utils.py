@@ -56,22 +56,35 @@ PDB_CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)  # := 62.
 
 
+def create_chain_index(
+    residue_index: np.ndarray, pseudo_linker_length: int = 0
+) -> np.array:
+    if pseudo_linker_length > 0:
+        chain_index = np.cumsum(
+            (residue_index[..., 1:] - residue_index[..., :-1]) >= pseudo_linker_length
+        )
+        return np.concatenate((np.zeros(chain_index.shape[:-1] + (1,)), chain_index))
+    return np.zeros(residue_index.shape)
+
+
 def create_full_prot(
     atom37: np.ndarray,
     atom37_mask: np.ndarray,
     chain_index=None,
     aatype=None,
+    residue_index=None,
     b_factors=None,
 ):
     assert atom37.ndim == 3
     assert atom37.shape[-1] == 3
-    assert atom37.shape[-2] == 37
+    assert atom37.shape[-2] == residue_constants.atom_type_num
     n = atom37.shape[0]
-    residue_index = np.arange(n)
+    if residue_index is None:
+        residue_index = np.arange(n)
     if chain_index is None:
         chain_index = np.zeros(n)
     if b_factors is None:
-        b_factors = np.zeros([n, 37])
+        b_factors = np.zeros([n, residue_constants.atom_type_num])
     if aatype is None:
         aatype = np.zeros(n, dtype=int)
     return Protein(
@@ -88,6 +101,7 @@ def write_prot_to_pdb(
     prot_pos: np.ndarray,
     file_path: str,
     aatype: np.ndarray = None,
+    residue_index: np.ndarray = None,
     chain_index: np.ndarray = None,
     overwrite=False,
     no_indexing=False,
@@ -121,6 +135,7 @@ def write_prot_to_pdb(
                     atom37_mask,
                     chain_index=chain_index,
                     aatype=aatype,
+                    residue_index=residue_index,
                     b_factors=b_factors,
                 )
                 pdb_prot = to_pdb(prot, model=t + 1, add_end=False)
@@ -132,6 +147,7 @@ def write_prot_to_pdb(
                 atom37_mask,
                 chain_index=chain_index,
                 aatype=aatype,
+                residue_index=residue_index,
                 b_factors=b_factors,
             )
             pdb_prot = to_pdb(prot, model=1, add_end=False)
@@ -152,7 +168,9 @@ def to_pdb(prot: Protein, model=1, add_end=True) -> str:
       PDB string.
     """
     restypes = residue_constants.restypes + ["X"]
-    res_1to3 = lambda r: residue_constants.restype_1to3.get(restypes[r], "UNK")
+    res_1to3 = lambda r: residue_constants.restype_1to3.get(
+        (restypes[r], residue_constants.moltype(r)), "UNK"
+    )
     atom_types = residue_constants.atom_types
 
     pdb_lines = []
@@ -200,7 +218,7 @@ def to_pdb(prot: Protein, model=1, add_end=True) -> str:
         for atom_name, pos, mask, b_factor in zip(
             atom_types, atom_positions[i], atom_mask[i], b_factors[i]
         ):
-            if mask < 0.5:
+            if len(atom_name) == 0 or mask < 0.5:  # FIX: DX or X
                 continue
 
             record_type = "ATOM"
@@ -306,7 +324,7 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
                     f"PDB contains an insertion code at chain {chain.id} and residue "
                     f"index {res.id[1]}. These are not supported."
                 )
-            res_shortname = residue_constants.restype_3to1.get(res.resname, "X")
+            res_shortname = residue_constants.restype_3to1.get(res.resname, ("X", residue_constants.PROT))
             restype_idx = residue_constants.restype_order.get(
                 res_shortname, residue_constants.restype_num
             )
