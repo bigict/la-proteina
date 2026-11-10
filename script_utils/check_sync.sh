@@ -71,6 +71,11 @@ check proteinfoundation/partial_autoencoder/autoencoder.py 0 'mask > 0'
 # 权重只应出现在 compute_kl_penalty 调用处；日志路径必须用未加权 mask
 check proteinfoundation/partial_autoencoder/autoencoder.py 1 'token_level_w(aatype, self.cfg_ae.loss.kl)'
 
+# --- 附加工具：OP1/OP2 翻转比例统计 ---
+# 必须 import 生产规则本身；若这里为 0，说明脚本被改成自己重实现了一份规则，
+# 统计结果就会与训练管线脱钩。
+check script_utils/stat_op1_op2_flip.py 1 'from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens'
+
 echo
 if [ "$fail" = 0 ]; then
     echo "==> 全部同步 OK"
