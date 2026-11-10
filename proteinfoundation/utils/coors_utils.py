@@ -24,6 +24,7 @@
 
 
 from math import prod
+from typing import Optional
 
 import torch
 from jaxtyping import Bool, Float
@@ -31,6 +32,7 @@ from scipy.spatial.transform import Rotation as Scipy_Rotation
 from torch import Tensor
 
 from openfold.np.residue_constants import (
+    atom_order,
     atom_type_num,
     restype_atom14_mask,
     restype_atom14_rigid_group_positions,
@@ -47,6 +49,62 @@ from openfold.utils.rigid_utils import Rigid, Rotation
 nm_to_ang_scale = 10.0
 ang_to_nm = lambda trans: trans / nm_to_ang_scale
 nm_to_ang = lambda trans: trans * nm_to_ang_scale
+
+
+def canonicalize_phosphate_oxygens(
+    coords: Float[Tensor, "... natoms 3"],
+    mask: Optional[Bool[Tensor, "... natoms"]] = None,
+    eps: float = 1e-6,
+) -> Float[Tensor, "... natoms 3"]:
+    """
+    Relabels the phosphate oxygens OP1/OP2 by a deterministic geometric rule.
+
+    OP1 and OP2 are chemically equivalent and their naming in PDB entries is
+    arbitrary, so every feature that distinguishes them (the alpha-torsion
+    surrogate in rc.chi_angles_atoms, RelativeResidueOrientationPairFeat,
+    BackboneBondAnglesSeqFeat, ...) inherits dataset-level label noise. Requiring
+    the (OP1, O5', OP2) arrangement around P to be right-handed removes the
+    ambiguity once, at load time, without changing any feature width.
+
+    Residues with a missing atom or a near-planar (degenerate) phosphate are left
+    untouched rather than guessed at.
+
+    Args:
+        coords: Atom coordinates, shape [..., atom_type_num, 3]
+        mask: Atom presence mask, shape [..., atom_type_num]. If None only the
+            degeneracy guard applies.
+        eps: Signed volumes with |v| <= eps count as degenerate.
+
+    Returns:
+        A copy of `coords` with OP1/OP2 swapped wherever the rule requires it.
+    """
+    if "OP1" not in atom_order:
+        return coords
+
+    i_op1, i_op2 = atom_order["OP1"], atom_order["OP2"]
+    i_p, i_o5p = atom_order["P"], atom_order["O5'"]
+
+    op1, op2 = coords[..., i_op1, :], coords[..., i_op2, :]
+    p, o5p = coords[..., i_p, :], coords[..., i_o5p, :]
+
+    # Signed volume of the (OP1, O5', OP2) triple around P. It is antisymmetric
+    # under OP1 <-> OP2, so its sign selects one of the two labelings.
+    signed_vol = torch.linalg.vecdot(
+        torch.linalg.cross(op1 - p, o5p - p, dim=-1), op2 - p, dim=-1
+    )  # [...]
+
+    swap = signed_vol < -eps
+    if mask is not None:
+        swap = swap & (
+            mask[..., i_op1] & mask[..., i_op2] & mask[..., i_p] & mask[..., i_o5p]
+        )
+
+    # Clone rather than mutate in place: datasets may cache graph objects and
+    # reuse them across epochs, where an in-place swap would apply twice.
+    out = coords.clone()
+    out[..., i_op1, :] = torch.where(swap[..., None], op2, op1)
+    out[..., i_op2, :] = torch.where(swap[..., None], op1, op2)
+    return out
 
 
 def get_atom37_ca_mask(n: int, device: torch.device) -> Bool[Tensor, f"n {atom_type_num}"]:

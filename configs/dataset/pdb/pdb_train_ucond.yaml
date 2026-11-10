@@ -8,6 +8,7 @@ datamodule:
   batch_padding: True # whether we want a sparse PyG batch or a padded dense batch
   sampling_mode: "cluster-random" # sample randomly inside each sequence similarity cluster during training
   transforms:
+    - _target_: "proteinfoundation.datasets.transforms.CanonicalizePhosphateOxygensTransform" # Must precede CoordsToNanometers
     - _target_: "proteinfoundation.datasets.transforms.CoordsToNanometers"
     - _target_: "proteinfoundation.datasets.transforms.CenterStructureTransform"
     - _target_: "proteinfoundation.datasets.transforms.GlobalRotationTransform" # Transforms to apply to dataset examples
