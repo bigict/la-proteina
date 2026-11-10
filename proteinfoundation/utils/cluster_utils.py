@@ -174,6 +174,7 @@ def split_dataframe(
     ratios: List[float],
     leftover_split: int = 0,
     seed: int = 42,
+    overwrite: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """
     Split a DataFrame into multiple parts based on specified split ratios.
@@ -195,6 +196,9 @@ def split_dataframe(
     """
     assert len(splits) == len(ratios), "Number of splits must equal number of ratios"
     assert sum(ratios) == 1, "Split ratios must sum to 1"
+
+    if not overwrite and "split" in df.columns:
+        return df
 
     # Calculate size of each split
     split_sizes = [int(len(df) * ratio) for ratio in ratios]
@@ -311,7 +315,7 @@ def cluster_sequences(
 
 
 def split_sequence_clusters(
-    df, splits, ratios, leftover_split=0, seed=42
+    df, splits, ratios, leftover_split=0, seed=42, overwrite=True
 ) -> Dict[str, pd.DataFrame]:
     """
     Split clustered sequences into train/val/test sets.
@@ -328,7 +332,9 @@ def split_sequence_clusters(
         Dict[str, pd.DataFrame]: Dictionary mapping split names to DataFrames that contain randomly-split representative sequences.
     """
     # Split clusters into subsets
-    cluster_splits = split_dataframe(df, splits, ratios, leftover_split, seed)
+    cluster_splits = split_dataframe(
+        df, splits, ratios, leftover_split, seed, overwrite=overwrite
+    )
     # Get representative sequences for each split
     split_dfs = {}
     for split, cluster_df in cluster_splits.items():
