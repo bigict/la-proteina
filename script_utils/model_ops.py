@@ -2,6 +2,19 @@ import torch
 
 from openfold.np import residue_constants as rc
 
+
+def _linear_default_init(fan_in: int, *shape, dtype=None) -> torch.Tensor:
+    """Sample a weight block at nn.Linear's default init scale.
+
+    nn.Linear uses kaiming_uniform_(a=sqrt(5)), i.e. U(-1/sqrt(fan_in),
+    1/sqrt(fan_in)), std = 1/sqrt(3 * fan_in). Plain torch.randn (std=1) is ~48x
+    larger at fan_in=768, so the appended blocks dominate the expanded layer at
+    step 0 and the run only survives at a heavily reduced learning rate.
+    """
+    bound = fan_in ** -0.5
+    return torch.empty(*shape, dtype=dtype).uniform_(-bound, bound)
+
+
 def modify_ae_model_main(args):
     x = torch.load(args.model_files[0], map_location="cpu", weights_only=False)
     state_dict = x["state_dict"]
@@ -23,35 +36,59 @@ def modify_ae_model_main(args):
     #     x1_a37coors_nm: rc.atom_type_num * 3 + rc.atom_type_num * 1 = 260
     #     x1_a37coors_nm_rel: rc.atom_type_num * 3 + rc.atom_type_num * 1 = 260
     #     x1_bb_angles: 3 * 21 = 63
-    #     x1_sidechain_angles: rc.chi_angles_num * 21 + rc.chi_angles_num = 88
-    #     => 702
+    #     x1_sidechain_angles: rc.chi_angles_num * 21 + rc.chi_angles_num = 176
+    #     => 790
     assert a.shape[1] == 468, a.shape
+    enc_fan_in = (
+        1
+        + rc.restype_num
+        + 2 * rc.atom_type_num * 4
+        + 3 * 21
+        + rc.chi_angles_num * 21
+        + rc.chi_angles_num
+    )
+
+    def new_col(k):
+        return _linear_default_init(enc_fan_in, a.shape[0], k, dtype=a.dtype)
+
     b = torch.cat(
         [
             a[:, :21],
-            torch.randn(a.shape[0], rc.restype_num - 20),
+            new_col(rc.restype_num - 20),
             a[:, 21:132],
-            torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+            new_col((rc.atom_type_num - 37) * 3),
             a[:, 132:169],
-            torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+            new_col((rc.atom_type_num - 37) * 1),
             a[:, 169:280],
-            torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+            new_col((rc.atom_type_num - 37) * 3),
             a[:, 280:317],
-            torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+            new_col((rc.atom_type_num - 37) * 1),
             a[:, 317:464],
-            torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 21),
+            new_col((rc.chi_angles_num - 4) * 21),
             a[:, 464:468],
-            torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 1),
+            new_col((rc.chi_angles_num - 4) * 1),
         ],
         dim=1
     )
+    assert b.shape[1] == enc_fan_in, (b.shape, enc_fan_in)
     print(f"{a.shape} => {b.shape}")
     state_dict["encoder.init_repr_factory.linear_out.weight"] = b
 
+    # Zero-init both decoder heads so step 0 is benign: NA logits start uniform
+    # (CE = log(restype_num) rather than a saturated ~27) and NA atoms start at
+    # the frame anchor rather than ~277 A away. Zero rows also make dL/dx vanish
+    # through these heads, so the pretrained trunk is not disturbed until the
+    # head itself has moved.
     a = state_dict["decoder.logit_linear.1.weight"]
     assert a.shape[0] == 20, a.shape
     b = torch.cat(
-        [a, torch.randn(rc.restype_num - a.shape[0], a.shape[1])], dim=0
+        [
+            a,
+            torch.zeros(
+                rc.restype_num - a.shape[0], a.shape[1], dtype=a.dtype
+            ),
+        ],
+        dim=0,
     )
     print(f"{a.shape} => {b.shape}")
     state_dict["decoder.logit_linear.1.weight"] = b
@@ -59,7 +96,13 @@ def modify_ae_model_main(args):
     a = state_dict["decoder.struct_linear.1.weight"]
     assert a.shape[0] == 111, a.shape
     b = torch.cat(
-        [a, torch.randn(rc.atom_type_num * 3 - a.shape[0], a.shape[1])], dim=0
+        [
+            a,
+            torch.zeros(
+                rc.atom_type_num * 3 - a.shape[0], a.shape[1], dtype=a.dtype
+            ),
+        ],
+        dim=0,
     )
     state_dict["decoder.struct_linear.1.weight"] = b
     print(f"{a.shape} => {b.shape}")
@@ -84,36 +127,63 @@ def modify_latent_model_main(args):
 
     if args.model_type == "ucond":
         assert a.shape[1] == 45, a.shape
-        b = torch.cat([a, torch.randn(a.shape[0], rc.restype_num - 20)], dim=1)
+        fan_in = a.shape[1] + (rc.restype_num - 20)
+        b = torch.cat(
+            [
+                a,
+                _linear_default_init(
+                    fan_in, a.shape[0], rc.restype_num - 20, dtype=a.dtype
+                ),
+            ],
+            dim=1,
+        )
+        assert b.shape[1] == fan_in, (b.shape, fan_in)
     elif args.model_type == "motif_idx":
         assert a.shape[1] == 549, a.shape
         # [3, 8, 3, 8, 3, 20, 494] => [3, 8, 3, 8, 3, 30, 854]
         # [148, 148, 20, ] => [260, 260, 30, 176, 63, 65]
+        n_restype = rc.restype_num - 20
+        n_atom3 = (rc.atom_type_num - 37) * 3
+        n_atom1 = (rc.atom_type_num - 37) * 1
+        n_chi21 = (rc.chi_angles_num - 4) * 21
+        n_chi1 = (rc.chi_angles_num - 4) * 1
+        fan_in = (
+            a.shape[1]
+            + 2 * n_restype
+            + 2 * n_atom3
+            + 3 * n_atom1
+            + n_chi21
+            + n_chi1
+        )
+
+        def new_col(k):
+            return _linear_default_init(fan_in, a.shape[0], k, dtype=a.dtype)
+
         b = torch.cat(
             [
                 a[:, :45],
-                torch.randn(a.shape[0], rc.restype_num - 20),
+                new_col(n_restype),
                 a[:, 45:156],
-                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+                new_col(n_atom3),
                 a[:, 156:193],
-                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+                new_col(n_atom1),
                 a[:, 193:304],
-                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 3),
+                new_col(n_atom3),
                 a[:, 304:341],
-                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+                new_col(n_atom1),
                 a[:, 341:361],
-                torch.randn(a.shape[0], rc.restype_num - 20),
+                new_col(n_restype),
                 a[:, 361:445],
-                torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 21),
+                new_col(n_chi21),
                 a[:, 445:449],
-                torch.randn(a.shape[0], (rc.chi_angles_num - 4) * 1),
+                new_col(n_chi1),
                 a[:, 449:512],
                 a[:, 512:549],
-                torch.randn(a.shape[0], (rc.atom_type_num - 37) * 1),
+                new_col(n_atom1),
             ],
             dim=1
         )
-        assert b.shape[1] == 909, b.shape
+        assert b.shape[1] == fan_in == 909, (b.shape, fan_in)
 
     print(f"{a.shape} => {b.shape}")
     state_dict["nn.init_repr_factory.linear_out.weight"] = b
