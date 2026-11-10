@@ -534,7 +534,6 @@ class AutoEncoder(L.LightningModule):
 
         # Compute cross entropy
         b, n = mask.shape[0], mask.shape[1]
-        w = token_level_w(target_aa, self.cfg_ae.loss.seq)
         logits_pred_flat = logits_pred.view(b * n, rc.restype_num)  # [b * n, 20]
         target_aa_flat = target_aa.view(b * n)  # [b * n]
         seq_loss_flat = torch.nn.functional.cross_entropy(
