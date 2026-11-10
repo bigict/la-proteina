@@ -418,6 +418,7 @@ class AutoEncoder(L.LightningModule):
         reduce_mode: Literal["sum", "mean"] = "sum",
         loss_ty: str = "l2",
         weight: float = 1.0,
+        eps: float = 1e-6,
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes structural loss.
@@ -446,13 +447,15 @@ class AutoEncoder(L.LightningModule):
             atom_mask: Bool[torch.Tensor, f"b n {rc.atom_type_num}"],
             mode: Literal["sum", "mean"] = "sum",
         ) -> Float[torch.Tensor, "b"]:
-            nres = mask.sum(dim=-1)  # [b]
-            nat = atom_mask.sum(dim=-1) * mask  # [b, n]
+            # nres = mask.sum(dim=-1)  # [b]
             err = torch.sum(err, dim=(-1, -2))  # [b, n]
-            err = err * token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
+            # err = err * token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             if mode == "mean":
+                nat = atom_mask.sum(dim=-1) * mask  # [b, n]
                 err = err / nat  # Take mean over existing atoms if mode == "mean"
-            err = err.sum(dim=-1) / nres  # [b]
+            # err = err.sum(dim=-1) / nres  # [b]
+            w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
+            err = (err * w).sum(dim=-1) / ((mask * w).sum(dim=-1) + eps)  # [b]
             return err
 
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
@@ -496,6 +499,7 @@ class AutoEncoder(L.LightningModule):
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
         weight: float = 1.0,
+        eps: float = 1e-6,
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes cross entropy loss on predicted sequence.
@@ -530,6 +534,7 @@ class AutoEncoder(L.LightningModule):
 
         # Compute cross entropy
         b, n = mask.shape[0], mask.shape[1]
+        w = token_level_w(target_aa, self.cfg_ae.loss.seq)
         logits_pred_flat = logits_pred.view(b * n, rc.restype_num)  # [b * n, 20]
         target_aa_flat = target_aa.view(b * n)  # [b * n]
         seq_loss_flat = torch.nn.functional.cross_entropy(
@@ -539,8 +544,9 @@ class AutoEncoder(L.LightningModule):
         )  # [b * n]
         seq_loss = seq_loss_flat.view(b, n)  # [b, n]
         seq_loss = seq_loss * mask  # [b, n]
-        seq_loss = seq_loss * token_level_w(target_aa, self.cfg_ae.loss.seq)
-        seq_loss = torch.sum(seq_loss, dim=-1) / nres  # [b]
+        # seq_loss = seq_loss * token_level_w(target_aa, self.cfg_ae.loss.seq)
+        w = token_level_w(target_aa, self.cfg_ae.loss.seq)
+        seq_loss = torch.sum(seq_loss * w, dim=-1) / (torch.sum(mask * w, dim=-1) + eps)  # [b]
 
         # Compute seq recovery rate
         pred_aa = output_dec["aatype_max"]  # [b, n]
@@ -557,7 +563,7 @@ class AutoEncoder(L.LightningModule):
         self,
         mean: Float[Tensor, "b n d"],
         log_scale: Float[Tensor, "b n d"],
-        mask: Bool[Tensor, "b n"],
+        mask: Float[Tensor, "b n"],
     ) -> Float[Tensor, "b n d"]:
         """
         Computes KL penalty on the latent Gaussian distribution, per residue.
@@ -572,13 +578,13 @@ class AutoEncoder(L.LightningModule):
         self,
         mean: Float[Tensor, "b n d"],
         log_scale: Float[Tensor, "b n d"],
-        mask: Bool[Tensor, "b n"],
+        mask: Float[Tensor, "b n"],
         w: float,
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes KL penalty on the latent Gaussian distribution.
         """
-        nres = torch.sum(mask > 0, dim=-1)  # [b]
+        nres = torch.sum(mask, dim=-1)  # [b]
         kl_div = self._per_component_kl(
             mean=mean,
             log_scale=log_scale,
