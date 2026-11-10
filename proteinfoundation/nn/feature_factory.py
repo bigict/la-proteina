@@ -124,6 +124,56 @@ def bin_and_one_hot(tensor, bin_limits):
     return torch.nn.functional.one_hot(bin_indices, len(bin_limits) + 1) * 1.0
 
 
+# Number of one-hot bins per angle. Matches the `len(linspace(-pi, pi, 20)) + 1`
+# width the non-periodic call sites used, so feature dims are unchanged.
+N_ANGLE_BINS = 21
+
+
+def bin_and_one_hot_periodic(tensor, n_bins: int = N_ANGLE_BINS):
+    """
+    One-hot binning of signed angles over [-pi, pi), wrapping at the seam.
+
+    `bin_and_one_hot(tensor, linspace(-pi, pi, n_bins - 1))` uses bucketize, so
+    with atan2 output in (-pi, pi] the top bin is unreachable and the bottom bin
+    only ever catches the exact -pi endpoint: 19 of 21 bins carry the range.
+    Worse, it maps -pi and +pi -- the same physical angle -- 18 bins apart, and
+    nucleic-acid alpha and zeta both have a trans population sitting on that
+    seam, so near-identical conformations get maximally distant encodings.
+
+    Args:
+        tensor (Tensor): Signed angles in radians, shape [*]
+        n_bins (int): Number of bins.
+
+    Returns:
+        torch.Tensor: Output tensor of shape [*, n_bins]
+    """
+    width = 2 * torch.pi / n_bins
+    bin_indices = torch.floor((tensor + torch.pi) / width).remainder(n_bins).long()
+    return torch.nn.functional.one_hot(bin_indices, n_bins) * 1.0
+
+
+def bin_and_one_hot_bond_angle(tensor, n_bins: int = N_ANGLE_BINS):
+    """
+    One-hot binning of bond angles over their actual range [0, pi].
+
+    `bond_angles` returns atan2(sin, cos) with sin >= 0, i.e. [0, pi]. Binning
+    it with `linspace(-pi, pi, ...)` wastes the lower half of the code and halves
+    the effective resolution (~19 deg instead of ~8.6 deg at 21 bins).
+
+    Args:
+        tensor (Tensor): Bond angles in radians, shape [*]
+        n_bins (int): Number of bins.
+
+    Returns:
+        torch.Tensor: Output tensor of shape [*, n_bins]
+    """
+    width = torch.pi / n_bins
+    bin_indices = torch.clamp(
+        torch.floor(tensor / width), min=0, max=n_bins - 1
+    ).long()
+    return torch.nn.functional.one_hot(bin_indices, n_bins) * 1.0
+
+
 def indices_force_start_w_one(pdb_idx, mask):
     """
     Takes a tensor with pdb indices for a batch and forces them all to start with the index 1.
@@ -797,10 +847,9 @@ class BackboneTorsionAnglesSeqFeat(Feature):
 
     def forward(self, batch):
         bb_torsion = self._get_bb_torsion_angles(batch)  # [b, n, 3]
-        bb_torsion_feats = bin_and_one_hot(
-            bb_torsion,
-            torch.linspace(-torch.pi, torch.pi, 20, device=bb_torsion.device),
-        )  # [b, n, 3, nbins], nbins in 20+1
+        bb_torsion_feats = bin_and_one_hot_periodic(
+            bb_torsion, N_ANGLE_BINS
+        )  # [b, n, 3, nbins]
         bb_torsion_feats = einops.rearrange(
             bb_torsion_feats, "b n t d -> b n (t d)"
         )  # [b, n, 3 * nbins]
@@ -880,9 +929,8 @@ class BackboneBondAnglesSeqFeat(Feature):
 
     def forward(self, batch):
         bb_bond_angle = self._get_bb_bond_angles(batch)  # [b, n, 3]
-        bb_bond_angle_feats = bin_and_one_hot(
-            bb_bond_angle,
-            torch.linspace(-torch.pi, torch.pi, 20, device=bb_bond_angle.device),
+        bb_bond_angle_feats = bin_and_one_hot_bond_angle(
+            bb_bond_angle, N_ANGLE_BINS
         )  # [b, n, 3, nbins]
         bb_bond_angle_feats = einops.rearrange(
             bb_bond_angle_feats, "b n t d -> b n (t d)"
@@ -961,8 +1009,8 @@ class OpenfoldSideChainAnglesSeqFeat(Feature):
     def forward(self, batch):
         _, angles, torsion_angles_mask = self._get_sidechain_angles(batch)
         # _, [b, n, 4] and [b, n, 4]
-        angles_feat = bin_and_one_hot(
-            angles, torch.linspace(-torch.pi, torch.pi, 20, device=angles.device)
+        angles_feat = bin_and_one_hot_periodic(
+            angles, N_ANGLE_BINS
         )  # [b, n, 4, nbins]
         angles_feat = angles_feat * torsion_angles_mask[..., None]
         angles_feat = einops.rearrange(
@@ -1641,12 +1689,18 @@ class RelativeResidueOrientationPairFeat(Feature):
         phi_12 = bond_angles(CA_p1, CB_p1, CB_p2)  # [b, n, n]
         phi_21 = bond_angles(CA_p2, CB_p2, CB_p1)  # [b, n, n]
         w = signed_dihedral_angle(CA_p1, CB_p1, CB_p2, CA_p2)  # [b, n, n]
-        angles = torch.stack(
-            [theta_12, theta_21, phi_12, phi_21, w], dim=-1
-        )  # [b, n, n, 5]
 
-        angles_feat = bin_and_one_hot(
-            angles, torch.linspace(-torch.pi, torch.pi, 20, device=angles.device)
+        # theta_*/w are signed dihedrals over [-pi, pi]; phi_* are bond angles
+        # over [0, pi] and need their own bin range. Channel order is unchanged.
+        angles_feat = torch.stack(
+            [
+                bin_and_one_hot_periodic(theta_12),
+                bin_and_one_hot_periodic(theta_21),
+                bin_and_one_hot_bond_angle(phi_12),
+                bin_and_one_hot_bond_angle(phi_21),
+                bin_and_one_hot_periodic(w),
+            ],
+            dim=-2,
         )  # [b, n, n, 5, nbins]
         angles_feat = einops.rearrange(
             angles_feat, "b n m f d -> b n m (f d)"
