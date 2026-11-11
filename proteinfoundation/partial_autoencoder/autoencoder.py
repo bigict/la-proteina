@@ -336,11 +336,13 @@ class AutoEncoder(L.LightningModule):
         )
 
         if not val_step:  # Don't log these for val step
-            # Log Kl statistics
+            # Log Kl statistics. Unweighted on purpose: the `> 0.1` activity
+            # threshold below must mean the same raw nats for every residue type,
+            # or DNA/RNA get judged active at a 6-8x lower bar than protein.
             componentwise_kl = self._per_component_kl(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
+                mask=mask,
             )  # [b, n, d]
             self.log_tensor_statistics(
                 bs=bs,
@@ -729,6 +731,8 @@ class AutoEncoder(L.LightningModule):
         """
         Computes KL penalty on the latent Gaussian distribution, per residue.
 
+        `mask` may carry per-token weights; they are applied to the KL directly.
+
         Returns KL, per residue (masked) and latent dimension, shape [b n d].
         """
         scale = torch.exp(log_scale)  # [b, n, 3]
@@ -744,6 +748,10 @@ class AutoEncoder(L.LightningModule):
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes KL penalty on the latent Gaussian distribution.
+
+        `mask` is expected to already carry the per-token weights (see
+        token_level_w), so it normalizes by the total weight rather than by the
+        token count -- the same convention compute_struct_lddt_loss uses.
         """
         nres = torch.sum(mask, dim=-1)  # [b]
         kl_div = self._per_component_kl(
