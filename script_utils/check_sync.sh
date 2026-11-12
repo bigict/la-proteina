@@ -88,6 +88,19 @@ check script_utils/stat_op1_op2_flip.py 1 '"--by-entry-csv"'
 # in _write_entry_csv); otherwise missing-atom/near-planar residues dilute the
 # rate toward 0% and fabricate within-entry consistency.
 check script_utils/stat_op1_op2_flip.py 2 'n_dec = e["n_na"] - e["n_skip"]'
+# --na-only: exclude protein-NA complexes as whole entries
+check script_utils/stat_op1_op2_flip.py 1 '"--na-only"'
+check script_utils/stat_op1_op2_flip.py 1 'is_prot = (rtype >= rc.prot_from_idx) & (rtype <= rc.prot_to_idx)'
+# placeholder coords must not be mistaken for broken bond lengths
+check script_utils/stat_op1_op2_flip.py 1 'FILL_VALUE_COORDS = 1e-5'
+check script_utils/stat_op1_op2_flip.py 1 'valid = present & ~is_fill'
+# P-O bond-length sanity window
+check script_utils/stat_op1_op2_flip.py 1 'P_O_MIN, P_O_MAX = 1.2, 2.0'
+# flip% denominator is the decidable count in both tables
+check script_utils/stat_op1_op2_flip.py 2 'nd = n - mi - dg'
+# the eps advice must point at RAISING eps, never lowering it
+check script_utils/stat_op1_op2_flip.py 0 'eps too large, lower it'
+check script_utils/stat_op1_op2_flip.py 1 'Consider --eps'
 
 echo
 if [ "$fail" = 0 ]; then
