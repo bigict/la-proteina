@@ -1,42 +1,53 @@
 #!/usr/bin/env python3
-"""统计 OP1/OP2 规范化规则在数据集上的实际翻转比例。
+"""Measure how often the OP1/OP2 canonicalization rule relabels a dataset.
 
-背景：OP1/OP2 是化学等价的磷酸氧，PDB 里的命名是任意的。在此规则接入之前，
-所有区分 OP1/OP2 的特征（chi_angles_atoms[NA][0] 的 alpha 替代、
-RelativeResidueOrientationPairFeat 的全部 5 个通道、
-BackbonePairDistancesNanometerPairFeat 的 2/4 通道、
-BackboneBondAnglesSeqFeat 的 theta_x/theta_y）都带有数据集级的标签噪声。
-本脚本量化那个噪声。
+Background: OP1 and OP2 are chemically equivalent phosphate oxygens and their
+naming in PDB entries is arbitrary. Before the rule was wired in, every feature
+that distinguished them carried dataset-level label noise: the alpha surrogate
+in chi_angles_atoms[NA][0], all five channels of
+RelativeResidueOrientationPairFeat, two of four channels of
+BackbonePairDistancesNanometerPairFeat, and theta_x/theta_y of
+BackboneBondAnglesSeqFeat. This script quantifies that noise.
 
-判 flip 用的是生产代码 `canonicalize_phosphate_oxygens` 本身（对比交换前后的
-OP1 槽位），而不是重新实现一遍规则，所以规则以后再改，本脚本自动跟着变。
-signed volume 只用于诊断（区分"本来就规范"和"规则放弃判定"），不参与决策。
+Flip detection calls the production `canonicalize_phosphate_oxygens` and diffs
+the OP1 slot before/after, rather than reimplementing the sign rule, so the
+statistic stays coupled to whatever the pipeline actually does. The signed
+volume is recomputed only for diagnostics (separating "already canonical" from
+"rule declined to decide"); it never drives the decision.
 
-两个层次的统计：
+Two levels of reporting:
 
-1) 全局 / per-restype 翻转率。接近 50% 说明原始命名与几何无关。
+1) Global and per-restype flip rate. Near 50% means the original labelling was
+   uncorrelated with geometry.
 
-2) per-entry 翻转率分布。全局 50% 有两种完全不同的成因，必须区分：
-   (a) entry 内一致、entry 间不同 —— 每个 entry 的翻转率贴近 0% 或 100%，
-       分布双峰。此时 OP1/OP2 是系统性的 per-entry 属性，与 deposition
-       软件/年代相关，是**可学习的混杂因子**，比随机噪声更糟。
-   (b) entry 内即随机 —— 翻转率集中在 50% 附近，是纯噪声。
-   两种情形下论文能主张的强度不同，修复的价值表述也不同。
+2) Per-entry flip-rate distribution. A global 50% has two very different causes
+   that must be told apart:
+   (a) Consistent within an entry, different between entries -- each entry's
+       rate sits near 0% or 100% and the distribution is bimodal. OP1/OP2 is
+       then a systematic per-entry property, plausibly correlated with
+       deposition software or date, i.e. a *learnable confound*, which is worse
+       than random noise because the model can fit it.
+   (b) Random within an entry -- rates cluster around 50%, i.e. plain variance.
+   The strength of the claim, and the value of the fix, differ between the two.
 
-per-entry 比率的分母是**可判定残基数**（剔除缺原子与近平面的残基），
-否则那些残基会把比率稀释向 0%，伪造出"entry 内一致"。
-另有 --min-na-res 过滤核酸残基过少的 entry：只有 1 个核酸残基的 entry
-翻转率必然是 0% 或 100%，会虚高"一致"比例。
+The per-entry denominator is the number of *decidable* residues (missing-atom
+and near-planar residues are excluded); counting them would dilute every rate
+toward 0% and fabricate within-entry consistency. --min-na-res additionally
+drops entries with too few nucleic-acid residues: an entry with a single
+nucleotide necessarily has a rate of 0% or 100%, inflating the consistent
+fraction.
 
-用法：
+Usage:
   python script_utils/stat_op1_op2_flip.py $DATA_PATH/pdb_train/processed
   python script_utils/stat_op1_op2_flip.py <dir_or_pt> [<dir_or_pt> ...] \
       --limit 2000 --workers 8 --csv op1_op2_flip.csv \
       --by-entry-csv op1_op2_by_entry.csv --min-na-res 4
 
-参数可以是 .pt 文件，也可以是目录（递归搜索 *.pt）。读取的是预处理缓存里的
-graph.coords / graph.coord_mask / graph.residue_type，即规范化之前的原始标注。
-注意不要用 pdb_utils.from_pdb_string 来量原始混淆——它自己就会做规范化。
+Arguments may be .pt files or directories (searched recursively for *.pt). The
+script reads graph.coords / graph.coord_mask / graph.residue_type from the
+preprocessed cache, i.e. the labelling *before* canonicalization. Do not use
+pdb_utils.from_pdb_string to measure the original confusion -- it canonicalizes
+on load.
 """
 
 import argparse
@@ -53,8 +64,9 @@ import torch
 from openfold.np import residue_constants as rc
 from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens
 
-# NB: 不用 rc.resname_to_idx 反查。它由 rc.resnames 构建，而 resnames 末尾误将
-# 元组 ("UNK", PROT) 而非字符串 "UNK" 入了列，这里直接从 restypes 正向构建。
+# NB: do not invert rc.resname_to_idx. It is built from rc.resnames, whose last
+# element is mistakenly the tuple ("UNK", PROT) rather than the string "UNK",
+# so build the index -> name map forward from restypes instead.
 IDX_TO_NAME = {
     i: rc.restype_1to3[(one, rc.moltype(i))] for i, one in enumerate(rc.restypes)
 }
@@ -73,7 +85,7 @@ ENTRY_BUCKET_LABELS = (
 
 
 def _entry_bucket(pct):
-    """把 per-entry 翻转率映射到互斥且完备的 7 个桶之一。"""
+    """Map a per-entry flip rate to one of 7 disjoint, exhaustive buckets."""
     if pct == 0.0:
         return 0
     if pct < 5.0:
@@ -97,11 +109,14 @@ def _bincount(x, minlength):
 
 
 def _scan_one(path_str, eps):
-    """扫描单个 .pt，返回按残基类型聚合的计数 + 该 entry 的汇总。子进程中执行。"""
+    """Scan one .pt; return per-restype counts plus this entry's totals.
+
+    Runs in a worker process.
+    """
     path = Path(path_str)
     try:
         graph = torch.load(path, map_location="cpu", weights_only=False)
-    except Exception as exc:  # 单个坏文件不该中断整轮统计
+    except Exception as exc:  # one bad file must not abort the whole sweep
         return {"ok": False, "err": f"{path.name}: {type(exc).__name__}: {exc}"}
 
     missing = [k for k in ("coords", "coord_mask", "residue_type") if k not in graph]
@@ -123,11 +138,11 @@ def _scan_one(path_str, eps):
     sel = torch.nonzero(is_na, as_tuple=True)[0]
     c, m, rt = coords[sel], mask[sel], rtype[sel]
 
-    # 生产规则实际会交换哪些残基
+    # Which residues the production rule actually swaps.
     canon = canonicalize_phosphate_oxygens(c, m, eps=eps)
     flipped = torch.any(canon[..., I_OP1, :] != c[..., I_OP1, :], dim=-1)
 
-    # 以下仅用于诊断
+    # Diagnostics only below this point.
     present = m[..., I_OP1] & m[..., I_OP2] & m[..., I_P] & m[..., I_O5P]
     sv = torch.linalg.vecdot(
         torch.linalg.cross(c[..., I_OP1, :] - c[..., I_P, :],
@@ -169,7 +184,7 @@ def _scan_one(path_str, eps):
 def _collect(paths, workers, eps, quiet):
     total = len(paths)
     if total == 0:
-        sys.exit("ERROR: 没找到任何 .pt 文件")
+        sys.exit("ERROR: no .pt files found")
 
     rows = defaultdict(lambda: [0, 0, 0, 0])
     sv = {"n": 0, "min": float("inf"), "max": 0.0, "buckets": [0] * N_SV_BUCKETS}
@@ -242,10 +257,11 @@ HEADER = (
 
 
 def _select_entries(entries, min_na_res):
-    """按可判定残基数过滤 entry，返回 (kept, n_small, n_undecided)。
+    """Filter entries by decidable residue count; return (kept, n_small, n_undecided).
 
-    kept 元素为 (name, n_decided, n_flip, pct)。分母用可判定数而非全部核酸
-    残基数，避免缺原子/近平面残基把比率稀释向 0%。
+    kept elements are (name, n_decided, n_flip, pct). The denominator is the
+    decidable count, not all nucleic-acid residues, so that missing-atom and
+    near-planar residues cannot dilute the rate toward 0%.
     """
     kept, n_small, n_undecided = [], 0, 0
     for e in entries:
@@ -261,25 +277,26 @@ def _select_entries(entries, min_na_res):
 
 
 def _report_entries(entries, min_na_res):
-    """打印 per-entry 翻转率分布，并区分 entry 内一致 vs entry 内随机。"""
+    """Print the per-entry distribution and classify within-entry vs between-entry."""
     if not entries:
         return
     kept, n_small, n_undecided = _select_entries(entries, min_na_res)
 
     print()
     print("=" * 72)
-    print("per-entry 翻转率分布")
+    print("Per-entry flip-rate distribution")
     print("=" * 72)
-    print(f"含核酸的 entry: {len(entries):,d}")
+    print(f"Entries containing nucleic acid: {len(entries):,d}")
     if n_undecided:
-        print(f"  排除 {n_undecided:,d} 个：全部核酸残基都无法判定（缺原子/近平面）")
+        print(f"  excluded {n_undecided:,d}: no decidable residue at all "
+              f"(missing atoms / near-planar)")
     if n_small:
-        print(f"  排除 {n_small:,d} 个：可判定核酸残基 < {min_na_res}"
-              f"（残基太少时比率必然贴近 0%/100%，会虚高'一致'比例）")
+        print(f"  excluded {n_small:,d}: fewer than {min_na_res} decidable residues "
+              f"(too few residues force the rate to 0%/100%, inflating consistency)")
     if not kept:
-        print(f"  没有 entry 满足 --min-na-res={min_na_res}，无法给出分布。")
+        print(f"  No entry meets --min-na-res={min_na_res}; no distribution to report.")
         return
-    print(f"  纳入统计: {len(kept):,d}")
+    print(f"  included: {len(kept):,d}")
 
     counts = [0] * len(ENTRY_BUCKET_LABELS)
     for _, _, _, pct in kept:
@@ -287,7 +304,7 @@ def _report_entries(entries, min_na_res):
 
     n_kept = len(kept)
     print()
-    print(f"{'翻转率区间':<14s} {'entry 数':>10s} {'占比':>9s}  直方图")
+    print(f"{'flip-rate bin':<14s} {'entries':>10s} {'share':>9s}  histogram")
     print("-" * 72)
     for label, c in zip(ENTRY_BUCKET_LABELS, counts):
         frac = c / n_kept
@@ -302,25 +319,33 @@ def _report_entries(entries, min_na_res):
     cons_f, mixed_f = cons / n_kept, mixed / n_kept
 
     print()
-    print(f"纳入 entry 的合计翻转率（残基加权）: {n_flip:,d}/{n_res:,d} = {agg:.2f}%")
-    print(f"entry 内一致（<5% 或 >=95%）: {cons:,d}/{n_kept:,d} = {cons_f * 100:.2f}%")
-    print(f"entry 内混杂（45%–55%）    : {mixed:,d}/{n_kept:,d} = {mixed_f * 100:.2f}%")
+    print(f"Aggregate flip rate over included entries (residue-weighted): "
+          f"{n_flip:,d}/{n_res:,d} = {agg:.2f}%")
+    print(f"Within-entry consistent (<5% or >=95%): "
+          f"{cons:,d}/{n_kept:,d} = {cons_f * 100:.2f}%")
+    print(f"Within-entry mixed (45%-55%)         : "
+          f"{mixed:,d}/{n_kept:,d} = {mixed_f * 100:.2f}%")
 
     print()
     if cons_f >= 0.8 and 40.0 <= agg <= 60.0:
-        print("=> 情形 (a)：entry 内高度一致，但 entry 之间约定不同（分布双峰）。")
-        print("   OP1/OP2 是系统性的 per-entry 属性，很可能与 deposition 软件/年代")
-        print("   相关，属于**可学习的混杂因子**——比随机噪声更糟，因为模型可能")
-        print("   真的去拟合它。建议用 --by-entry-csv 导出后按年代/分辨率/实验方法")
-        print("   交叉分析来确认相关性。")
+        print("=> Case (a): consistent within entries, different conventions between")
+        print("   them (bimodal). OP1/OP2 is a systematic per-entry property, likely")
+        print("   correlated with deposition software or date, i.e. a LEARNABLE")
+        print("   CONFOUND -- worse than random noise, because the model can fit it.")
+        print("   Export --by-entry-csv and cross-tabulate against deposition date,")
+        print("   resolution and experimental method to confirm the correlation.")
     elif mixed_f >= 0.5:
-        print("=> 情形 (b)：entry 内部即随机，属于纯噪声（方差），不是可学习混杂。")
+        print("=> Case (b): random within entries, i.e. plain variance, not a")
+        print("   learnable confound.")
     elif cons_f >= 0.8:
-        print("=> entry 内一致，且整体翻转率偏离 50%：原始命名本身相当一致，")
-        print("   规范化主要是防御性的（保证跨来源/跨工具一致），噪声担忧被高估。")
+        print("=> Consistent within entries and the aggregate rate is far from 50%:")
+        print("   the original labelling is already largely consistent, so")
+        print("   canonicalization is mainly defensive (cross-source agreement)")
+        print("   and the noise concern was overstated.")
     else:
-        print("=> 混合情形：部分 entry 一致、部分 entry 内随机。建议导出 per-entry")
-        print("   CSV 后分组看，单一全局数字不足以描述。")
+        print("=> Mixed: some entries consistent, some random within. Export the")
+        print("   per-entry CSV and inspect by group; one global number is not")
+        print("   enough to describe this.")
 
 
 def _report(rows, sv, errors, n_files, n_na_files, eps):
@@ -345,40 +370,42 @@ def _report(rows, sv, errors, n_files, n_na_files, eps):
 
     n, f = allr[0], allr[1]
     print()
-    print(f"扫描文件 {n_files:,d} 个（其中 {n_na_files:,d} 个含核酸），"
-          f"核酸残基 {n:,d} 个")
+    print(f"Scanned {n_files:,d} files ({n_na_files:,d} containing nucleic acid), "
+          f"{n:,d} nucleic-acid residues")
     if n:
         pct = 100.0 * f / n
-        print(f"OP1/OP2 被交换：{f:,d} 个 = {pct:.2f}%")
+        print(f"OP1/OP2 swapped: {f:,d} = {pct:.2f}%")
         if 40.0 <= pct <= 60.0:
-            print("  => 接近 50%：原始命名与几何基本无关。但还需看下面的 per-entry")
-            print("     分布才能区分'entry 间不同'与'entry 内随机'。")
+            print("  => Near 50%: the original labelling is essentially uncorrelated")
+            print("     with geometry. See the per-entry distribution below to tell")
+            print("     'different between entries' from 'random within an entry'.")
         elif pct < 5.0 or pct > 95.0:
-            print("  => 远离 50%：原始命名本身高度一致，标签噪声远小于预期，")
-            print("     规范化主要是防御性的（保证跨来源一致）。")
+            print("  => Far from 50%: the original labelling is already highly")
+            print("     consistent, so the label noise is much smaller than feared")
+            print("     and canonicalization is mainly defensive.")
         else:
-            print("  => 介于两者之间：部分来源一致、部分不一致，混合噪声。")
+            print("  => In between: some sources consistent, some not; mixed noise.")
 
     if allr[2]:
-        print(f"注意：{allr[2]:,d} 个残基因缺 OP1/OP2/P/O5' 原子而无法判定，"
-              f"规则按设计保持原样。")
+        print(f"Note: {allr[2]:,d} residues lack OP1/OP2/P/O5' and cannot be "
+              f"decided; the rule leaves them untouched by design.")
     if allr[3]:
-        print(f"注意：{allr[3]:,d} 个残基磷酸基近平面（|sv| <= {eps:g}），"
-              f"规则放弃判定。")
+        print(f"Note: {allr[3]:,d} residues have a near-planar phosphate "
+              f"(|sv| <= {eps:g}); the rule declines to decide.")
 
     if sv["n"]:
         print()
-        print(f"|signed volume| 分布（已判定的 {sv['n']:,d} 个残基，单位 A^3）：")
+        print(f"|signed volume| over the {sv['n']:,d} decided residues (A^3):")
         print(f"  min = {sv['min']:.4g}    max = {sv['max']:.4g}")
         for t, c in zip(SV_THRESHOLDS, sv["buckets"]):
             print(f"  |sv| < {t:<6g} : {c:,d}")
         margin = sv["min"] / eps if eps else float("inf")
-        print(f"  最小值 / eps = {margin:.3g}  "
-              f"({'eps 安全，无误判风险' if margin > 100 else 'eps 偏大，建议调小'})")
+        verdict = "eps is safe" if margin > 100 else "eps too large, lower it"
+        print(f"  min / eps = {margin:.3g}  ({verdict})")
 
     if errors:
         print()
-        print(f"读取失败 {len(errors)} 个文件，前 10 条：", file=sys.stderr)
+        print(f"{len(errors)} files failed to load; first 10:", file=sys.stderr)
         for e in errors[:10]:
             print(f"  {e}", file=sys.stderr)
 
@@ -391,11 +418,11 @@ def _write_csv(path, rows):
         for nm in sorted(rows, key=lambda k: (k not in DNA_NAMES + RNA_NAMES, k)):
             n, f, mi, dg = rows[nm]
             w.writerow([nm, n, f, f"{100.0 * f / n:.4f}" if n else "", mi, dg])
-    print(f"\nCSV 已写入 {path}")
+    print(f"\nCSV written to {path}")
 
 
 def _write_entry_csv(path, entries, min_na_res):
-    """导出每个 entry 的计数，便于与 PDB 元数据（年代/分辨率/方法）交叉分析。"""
+    """Export every entry so rates can be cross-tabulated against PDB metadata."""
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["entry", "n_na", "n_decided", "n_flipped", "flip_pct",
@@ -410,7 +437,7 @@ def _write_entry_csv(path, entries, min_na_res):
                 e["n_skip"], int(included),
                 ENTRY_BUCKET_LABELS[_entry_bucket(pct)] if included else "",
             ])
-    print(f"per-entry CSV 已写入 {path}")
+    print(f"Per-entry CSV written to {path}")
 
 
 def _resolve(inputs):
@@ -422,31 +449,37 @@ def _resolve(inputs):
         elif p.is_file():
             out.append(p)
         else:
-            print(f"WARN: 路径不存在，跳过：{p}", file=sys.stderr)
+            print(f"WARN: path does not exist, skipping: {p}", file=sys.stderr)
     return out
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="统计 OP1/OP2 规范化规则的数据集翻转比例（全局 + per-entry 分布）",
+        description="Measure the OP1/OP2 canonicalization flip rate "
+                    "(global and per-entry distribution)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("paths", nargs="+", help=".pt 文件或目录（目录递归搜索 *.pt）")
+    ap.add_argument("paths", nargs="+",
+                    help=".pt files or directories (searched recursively for *.pt)")
     ap.add_argument("--limit", type=int, default=None,
-                    help="只扫描这么多文件；用 --seed 做确定性随机抽样，"
-                         "而不是取排序后的前 N 个（后者在目录按分子类型分文件时会有偏）")
-    ap.add_argument("--seed", type=int, default=0, help="--limit 抽样的随机种子")
+                    help="scan only this many files, drawn as a seeded random "
+                         "sample rather than the first N sorted paths (the latter "
+                         "is biased if the cache is laid out by molecule type)")
+    ap.add_argument("--seed", type=int, default=0, help="random seed for --limit")
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1),
-                    help="并行进程数（1 = 串行，便于调试）")
+                    help="number of worker processes (1 = serial, easier to debug)")
     ap.add_argument("--eps", type=float, default=1e-6,
-                    help="近平面判定阈值，需与 canonicalize_phosphate_oxygens 一致")
+                    help="near-planar threshold; must match "
+                         "canonicalize_phosphate_oxygens")
     ap.add_argument("--min-na-res", type=int, default=4,
-                    help="per-entry 分布只纳入可判定核酸残基数 >= 此值的 entry"
-                         "（默认 4；太少的 entry 比率必然贴近 0%%/100%%，会虚高一致性）")
-    ap.add_argument("--csv", default=None, help="额外写出 per-restype CSV")
+                    help="per-entry distribution only includes entries with at "
+                         "least this many decidable residues (default 4; too few "
+                         "forces the rate to 0%%/100%%, inflating consistency)")
+    ap.add_argument("--csv", default=None, help="also write a per-restype CSV")
     ap.add_argument("--by-entry-csv", default=None,
-                    help="额外写出 per-entry CSV（含未纳入统计的 entry，便于交叉分析）")
-    ap.add_argument("--quiet", action="store_true", help="不打印进度")
+                    help="also write a per-entry CSV (includes excluded entries, "
+                         "for cross-tabulation)")
+    ap.add_argument("--quiet", action="store_true", help="suppress progress output")
     args = ap.parse_args()
 
     paths = _resolve(args.paths)
@@ -454,16 +487,18 @@ def main():
         k = min(args.limit, len(paths))
         paths = random.Random(args.seed).sample(paths, k)
         if not args.quiet:
-            print(f"--limit：随机抽样 {k} 个文件（seed={args.seed}）")
+            print(f"--limit: random sample of {k} files (seed={args.seed})")
     if not args.quiet:
-        print(f"待扫描 {len(paths)} 个 .pt，workers={args.workers}, eps={args.eps:g}")
+        print(f"Scanning {len(paths)} .pt files, workers={args.workers}, "
+              f"eps={args.eps:g}")
 
     rows, sv, errors, n_files, n_na_files, entries = _collect(
         paths, args.workers, args.eps, args.quiet
     )
     if not rows:
-        sys.exit("ERROR: 没有统计到任何核酸残基——检查路径是否指向预处理缓存，"
-                 "以及 restype_list 是否启用了 DNA/RNA")
+        sys.exit("ERROR: no nucleic-acid residues found -- check that the path "
+                 "points at the preprocessed cache and that restype_list "
+                 "enables DNA/RNA")
 
     _report(rows, sv, errors, n_files, n_na_files, args.eps)
     _report_entries(entries, args.min_na_res)

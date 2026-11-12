@@ -1,20 +1,21 @@
 #!/bin/bash
-# La-Proteina 改动同步校验：在训练机上跑，全部 OK 才说明代码同步完整。
-# 放在 script_utils/ 下，自动 cd 到仓库根目录。
+# La-Proteina change-sync check: run this on the training machine. All OK means
+# the tree synced completely. Lives in script_utils/ and cd's to the repo root.
 #
-# marker 用 grep -F 做定点字符串匹配，不用正则——避免转义写错导致
-# "匹配不上但看起来像代码没同步" 这类静默误判。
+# Markers use grep -F (fixed strings), not regex: a mis-escaped pattern would
+# otherwise fail to match and look exactly like "the code did not sync".
 set -u
-cd "$(dirname "$0")/.." || { echo "ERROR: 无法 cd 到仓库根目录" >&2; exit 2; }
+cd "$(dirname "$0")/.." || { echo "ERROR: cannot cd to the repo root" >&2; exit 2; }
 
-# 哨兵检查：定位失败时必须硬报错，不能退化成"全是 MISMATCH"的错误结论。
+# Sentinel check: a failed lookup must hard-error, never degrade into a wall of
+# MISMATCH lines that reads as "unsynced tree".
 for sentinel in \
     proteinfoundation/utils/coors_utils.py \
     proteinfoundation/nn/feature_factory.py \
     script_utils/model_ops.py; do
     if [ ! -f "$sentinel" ]; then
-        echo "ERROR: 找不到 $sentinel —— 当前目录不是仓库根 ($(pwd))" >&2
-        echo "       请把本脚本放在 <repo>/script_utils/ 下再运行。" >&2
+        echo "ERROR: $sentinel not found -- current dir is not the repo root ($(pwd))" >&2
+        echo "       Place this script under <repo>/script_utils/ and run it again." >&2
         exit 2
     fi
 done
@@ -39,20 +40,20 @@ check() { # check <file> <expected_count> <fixed_string>
 echo "repo: $(pwd)"
 echo
 
-# --- 第1轮：checkpoint 扩容的初始化尺度（torch.randn -> nn.Linear 默认尺度 / zero-init）---
+# --- Round 1: checkpoint-expansion init scale (torch.randn -> nn.Linear default / zero-init) ---
 check script_utils/model_ops.py 1 'def _linear_default_init'
 check script_utils/model_ops.py 0 'torch.randn('
 check script_utils/model_ops.py 2 'torch.zeros('
 check script_utils/model_ops.py 1 'assert b.shape[1] == enc_fan_in'
 check script_utils/model_ops.py 1 'assert b.shape[1] == fan_in == 909'
 
-# --- 第2轮：角度分箱（循环化 + 键角改用 [0,pi] 值域）---
+# --- Round 2: angle binning (periodic torsions, [0,pi] range for bond angles) ---
 check proteinfoundation/nn/feature_factory.py 1 'def bin_and_one_hot_periodic'
 check proteinfoundation/nn/feature_factory.py 1 'def bin_and_one_hot_bond_angle'
 check proteinfoundation/nn/feature_factory.py 1 'N_ANGLE_BINS = 21'
 check proteinfoundation/nn/feature_factory.py 0 'linspace(-torch.pi'
 
-# --- 第3轮：OP1/OP2 源头规范化 ---
+# --- Round 3: OP1/OP2 canonicalization at the source ---
 check proteinfoundation/utils/coors_utils.py 1 'def canonicalize_phosphate_oxygens'
 check proteinfoundation/datasets/transforms.py 1 'class CanonicalizePhosphateOxygensTransform'
 check proteinfoundation/utils/motif_utils.py 2 'x_motif = canonicalize_phosphate_oxygens'
@@ -61,35 +62,37 @@ for c in ucond motif_aa motif_tip; do
     check "configs/dataset/pdb/pdb_train_$c.yaml" 1 'CanonicalizePhosphateOxygensTransform'
 done
 
-# --- 上游 d2d31d4 / 37f71e9：struct 与 seq 改为 Σ(w·L)/(Σ(w·mask)+eps) ---
+# --- Upstream d2d31d4 / 37f71e9: struct and seq use sum(w*L)/(sum(w*mask)+eps) ---
 check proteinfoundation/partial_autoencoder/autoencoder.py 1 'err = (err * w).sum(dim=-1) / ((mask * w).sum(dim=-1) + eps)'
 check proteinfoundation/partial_autoencoder/autoencoder.py 1 'torch.sum(seq_loss * w, dim=-1) / (torch.sum(mask * w, dim=-1) + eps)'
 
-# --- 第4轮：KL 日志改用未加权（归一化本身由上游 d2d31d4 完成）---
+# --- Round 4: log unweighted KL (the normalization itself came from upstream d2d31d4) ---
 check proteinfoundation/partial_autoencoder/autoencoder.py 1 'nres = torch.sum(mask, dim=-1)'
 check proteinfoundation/partial_autoencoder/autoencoder.py 0 'mask > 0'
-# 权重只应出现在 compute_kl_penalty 调用处；日志路径必须用未加权 mask
+# The weight belongs only at the compute_kl_penalty call site; the logging path
+# must use the unweighted mask.
 check proteinfoundation/partial_autoencoder/autoencoder.py 1 'token_level_w(aatype, self.cfg_ae.loss.kl)'
 
-# --- 附加工具：OP1/OP2 翻转比例统计 ---
-# 必须 import 生产规则本身；若这里为 0，说明脚本被改成自己重实现了一份规则，
-# 统计结果就会与训练管线脱钩。
+# --- Tooling: OP1/OP2 flip-rate statistics ---
+# Must import the production rule. A count of 0 here means someone reimplemented
+# the rule inside the script, decoupling the statistic from the training pipeline.
 check script_utils/stat_op1_op2_flip.py 1 'from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens'
-# per-entry 分布：区分 "entry 间约定不同" 与 "entry 内随机"
+# Per-entry distribution: separates "different between entries" from "random within".
 check script_utils/stat_op1_op2_flip.py 1 'def _entry_bucket'
 check script_utils/stat_op1_op2_flip.py 1 'def _select_entries'
 check script_utils/stat_op1_op2_flip.py 1 'def _report_entries'
 check script_utils/stat_op1_op2_flip.py 1 'def _write_entry_csv'
 check script_utils/stat_op1_op2_flip.py 1 '"--min-na-res"'
 check script_utils/stat_op1_op2_flip.py 1 '"--by-entry-csv"'
-# 分母必须是可判定残基数（_select_entries 与 _write_entry_csv 各一处），
-# 否则缺原子/近平面残基会把比率稀释向 0%，伪造出 "entry 内一致"
+# The denominator must be the decidable count (one site in _select_entries, one
+# in _write_entry_csv); otherwise missing-atom/near-planar residues dilute the
+# rate toward 0% and fabricate within-entry consistency.
 check script_utils/stat_op1_op2_flip.py 2 'n_dec = e["n_na"] - e["n_skip"]'
 
 echo
 if [ "$fail" = 0 ]; then
-    echo "==> 全部同步 OK"
+    echo "==> All markers in sync"
 else
-    echo "==> 有 MISMATCH/MISSING，代码未同步完整，不要开始训练"
+    echo "==> MISMATCH/MISSING present: tree is not fully synced, do not start training"
 fi
 exit "$fail"
