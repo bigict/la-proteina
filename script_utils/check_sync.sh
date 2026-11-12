@@ -75,6 +75,16 @@ check proteinfoundation/partial_autoencoder/autoencoder.py 1 'token_level_w(aaty
 # 必须 import 生产规则本身；若这里为 0，说明脚本被改成自己重实现了一份规则，
 # 统计结果就会与训练管线脱钩。
 check script_utils/stat_op1_op2_flip.py 1 'from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens'
+# per-entry 分布：区分 "entry 间约定不同" 与 "entry 内随机"
+check script_utils/stat_op1_op2_flip.py 1 'def _entry_bucket'
+check script_utils/stat_op1_op2_flip.py 1 'def _select_entries'
+check script_utils/stat_op1_op2_flip.py 1 'def _report_entries'
+check script_utils/stat_op1_op2_flip.py 1 'def _write_entry_csv'
+check script_utils/stat_op1_op2_flip.py 1 '"--min-na-res"'
+check script_utils/stat_op1_op2_flip.py 1 '"--by-entry-csv"'
+# 分母必须是可判定残基数（_select_entries 与 _write_entry_csv 各一处），
+# 否则缺原子/近平面残基会把比率稀释向 0%，伪造出 "entry 内一致"
+check script_utils/stat_op1_op2_flip.py 2 'n_dec = e["n_na"] - e["n_skip"]'
 
 echo
 if [ "$fail" = 0 ]; then
