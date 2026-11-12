@@ -79,6 +79,15 @@ I_O5P = rc.atom_order["O5'"]
 N_SV_BUCKETS = 3  # |sv| < 1e-3, < 1e-2, < 1e-1
 SV_THRESHOLDS = (1e-3, 1e-2, 1e-1)
 
+# Covalent P-O is 1.48-1.61 A. These bounds are deliberately generous so that
+# only genuinely broken coordinates are flagged, not poorly refined ones.
+P_O_MIN, P_O_MAX = 1.2, 2.0
+
+# protein_to_pyg fills absent atoms with this value, and coord_mask only tests
+# the x component of the comparison. Any component equal to it means the atom is
+# a placeholder, not a measurement.
+FILL_VALUE_COORDS = 1e-5
+
 ENTRY_BUCKET_LABELS = (
     "= 0%", "(0%,5%)", "[5%,45%)", "[45%,55%]", "(55%,95%)", "[95%,100%)", "= 100%",
 )
@@ -108,10 +117,11 @@ def _bincount(x, minlength):
     return torch.bincount(x, minlength=minlength)
 
 
-def _scan_one(path_str, eps):
+def _scan_one(path_str, eps, na_only=False):
     """Scan one .pt; return per-restype counts plus this entry's totals.
 
-    Runs in a worker process.
+    Runs in a worker process. With na_only, entries containing any protein
+    residue are skipped entirely (protein-nucleic acid complexes).
     """
     path = Path(path_str)
     try:
@@ -128,6 +138,15 @@ def _scan_one(path_str, eps):
     mask = graph.coord_mask.bool()
     rtype = graph.residue_type.long()
 
+    if na_only:
+        # A complex is excluded as a whole entry, not residue by residue.
+        is_prot = (rtype >= rc.prot_from_idx) & (rtype <= rc.prot_to_idx)
+        n_prot = int(is_prot.sum())
+        if n_prot:
+            return {"ok": True, "rows": {}, "sv": None, "entry": None,
+                    "complex": True, "n_prot": n_prot,
+                    "n_res": int(rtype.numel())}
+
     is_na = (
         ((rtype >= rc.dna_from_idx) & (rtype <= rc.dna_to_idx))
         | ((rtype >= rc.rna_from_idx) & (rtype <= rc.rna_to_idx))
@@ -142,15 +161,22 @@ def _scan_one(path_str, eps):
     canon = canonicalize_phosphate_oxygens(c, m, eps=eps)
     flipped = torch.any(canon[..., I_OP1, :] != c[..., I_OP1, :], dim=-1)
 
-    # Diagnostics only below this point.
+    # Diagnostics only below this point. `present` mirrors what the production
+    # rule sees (coord_mask); `valid` additionally rejects placeholder coords so
+    # that a fill value cannot masquerade as an impossible bond length.
     present = m[..., I_OP1] & m[..., I_OP2] & m[..., I_P] & m[..., I_O5P]
+    four = torch.stack([c[..., i, :] for i in (I_OP1, I_OP2, I_P, I_O5P)], dim=-2)
+    is_fill = torch.any(four == FILL_VALUE_COORDS, dim=(-1, -2))
+    valid = present & ~is_fill
+    n_fill_leak = int((present & is_fill).sum())
+
     sv = torch.linalg.vecdot(
         torch.linalg.cross(c[..., I_OP1, :] - c[..., I_P, :],
                            c[..., I_O5P, :] - c[..., I_P, :], dim=-1),
         c[..., I_OP2, :] - c[..., I_P, :],
         dim=-1,
     )
-    degenerate = present & (sv.abs() <= eps)
+    degenerate = valid & (sv.abs() <= eps)
 
     rows = {}
     n_rt = _bincount(rt, n_slots)
@@ -162,14 +188,43 @@ def _scan_one(path_str, eps):
             int(n_rt[i]), int(flip_rt[i]), int(miss_rt[i]), int(degen_rt[i])
         )
 
+    decided = valid & ~degenerate
+
+    # Data quality: a signed volume far outside the tetrahedral range implies
+    # impossible P-O bond lengths. Check the distances directly -- they are the
+    # interpretable quantity, and they also tell us whether the flips cluster
+    # in broken geometry rather than in mislabelled but sound geometry.
+    d_op1 = torch.linalg.norm(c[..., I_OP1, :] - c[..., I_P, :], dim=-1)
+    d_op2 = torch.linalg.norm(c[..., I_OP2, :] - c[..., I_P, :], dim=-1)
+    d_o5p = torch.linalg.norm(c[..., I_O5P, :] - c[..., I_P, :], dim=-1)
+    bad_geom = valid & (
+        (d_op1 < P_O_MIN) | (d_op1 > P_O_MAX)
+        | (d_op2 < P_O_MIN) | (d_op2 > P_O_MAX)
+        | (d_o5p < P_O_MIN) | (d_o5p > P_O_MAX)
+    )
+    geom = None
+    if bool(valid.any()):
+        dp = torch.stack([d_op1, d_op2, d_o5p], dim=-1)[valid]
+        geom = {
+            "n_valid": int(valid.sum()),
+            "n_bad": int(bad_geom.sum()),
+            "n_bad_decided": int((bad_geom & decided).sum()),
+            "n_flip_bad": int((flipped & bad_geom).sum()),
+            "n_flip_good": int((flipped & decided & ~bad_geom).sum()),
+            "d_min": float(dp.min()),
+            "d_max": float(dp.max()),
+        }
+
     entry = {
         "name": path.stem,
         "n_na": int(n_rt.sum()),
         "n_flip": int(flip_rt.sum()),
         "n_skip": int(miss_rt.sum() + degen_rt.sum()),
+        "n_bad": int(bad_geom.sum()),
+        "n_fill_leak": n_fill_leak,
     }
 
-    av = sv[present & ~degenerate].abs()
+    av = sv[decided].abs()
     sv_stat = None
     if av.numel():
         sv_stat = {
@@ -178,10 +233,11 @@ def _scan_one(path_str, eps):
             "max": float(av.max()),
             "buckets": [int((av < t).sum()) for t in SV_THRESHOLDS],
         }
-    return {"ok": True, "rows": rows, "sv": sv_stat, "entry": entry}
+    return {"ok": True, "rows": rows, "sv": sv_stat, "entry": entry,
+            "geom": geom, "n_fill_leak": n_fill_leak}
 
 
-def _collect(paths, workers, eps, quiet):
+def _collect(paths, workers, eps, quiet, na_only=False):
     total = len(paths)
     if total == 0:
         sys.exit("ERROR: no .pt files found")
@@ -190,11 +246,20 @@ def _collect(paths, workers, eps, quiet):
     sv = {"n": 0, "min": float("inf"), "max": 0.0, "buckets": [0] * N_SV_BUCKETS}
     entries = []
     errors, done, n_na_files = [], 0, 0
+    cx = {"n": 0, "n_res": 0, "n_prot": 0}
+    gm = {"n_valid": 0, "n_fill_leak": 0, "n_bad": 0, "n_bad_decided": 0,
+          "n_flip_bad": 0, "n_flip_good": 0,
+          "d_min": float("inf"), "d_max": 0.0}
 
     def _merge(res):
         nonlocal n_na_files
         if not res["ok"]:
             errors.append(res["err"])
+            return
+        if res.get("complex"):
+            cx["n"] += 1
+            cx["n_res"] += res["n_res"]
+            cx["n_prot"] += res["n_prot"]
             return
         if res["rows"]:
             n_na_files += 1
@@ -213,23 +278,30 @@ def _collect(paths, workers, eps, quiet):
             sv["max"] = max(sv["max"], s["max"])
             for i in range(N_SV_BUCKETS):
                 sv["buckets"][i] += s["buckets"][i]
+        gm["n_fill_leak"] += res.get("n_fill_leak", 0)
+        g = res.get("geom")
+        if g:
+            for k in ("n_valid", "n_bad", "n_bad_decided", "n_flip_bad", "n_flip_good"):
+                gm[k] += g[k]
+            gm["d_min"] = min(gm["d_min"], g["d_min"])
+            gm["d_max"] = max(gm["d_max"], g["d_max"])
 
     if workers <= 1:
         for p in paths:
-            _merge(_scan_one(str(p), eps))
+            _merge(_scan_one(str(p), eps, na_only))
             done += 1
             if not quiet and done % 500 == 0:
                 print(f"  ... {done}/{total}", file=sys.stderr)
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_scan_one, str(p), eps) for p in paths]
+            futs = [pool.submit(_scan_one, str(p), eps, na_only) for p in paths]
             for fut in as_completed(futs):
                 _merge(fut.result())
                 done += 1
                 if not quiet and done % 500 == 0:
                     print(f"  ... {done}/{total}", file=sys.stderr)
 
-    return rows, sv, errors, total, n_na_files, entries
+    return rows, sv, errors, total, n_na_files, entries, cx, gm
 
 
 DNA_NAMES = ("DA", "DC", "DG", "DT", "DX")
@@ -245,14 +317,19 @@ def _group(rows, names):
 
 
 def _fmt_row(label, r):
+    # flip% uses the decidable count, the same denominator as the per-entry
+    # distribution; otherwise missing/degenerate residues dilute the rate and
+    # the two tables disagree (badly so for X, which is ~46% missing).
     n, f, mi, dg = r
-    pct = f"{100.0 * f / n:>7.2f}%" if n else f"{'-':>8s}"
-    return f"{label:<10s} {n:>12,d} {f:>12,d} {pct:>9s} {mi:>10,d} {dg:>12,d}"
+    nd = n - mi - dg
+    pct = f"{100.0 * f / nd:>7.2f}%" if nd else f"{'-':>8s}"
+    return (f"{label:<10s} {n:>12,d} {nd:>12,d} {f:>12,d} {pct:>9s} "
+            f"{mi:>10,d} {dg:>12,d}")
 
 
 HEADER = (
-    f"{'restype':<10s} {'n_res':>12s} {'n_flipped':>12s} {'flip%':>9s} "
-    f"{'missing':>10s} {'degenerate':>12s}"
+    f"{'restype':<10s} {'n_res':>12s} {'n_decided':>12s} {'n_flipped':>12s} "
+    f"{'flip%':>9s} {'missing':>10s} {'degenerate':>12s}"
 )
 
 
@@ -348,7 +425,7 @@ def _report_entries(entries, min_na_res):
         print("   enough to describe this.")
 
 
-def _report(rows, sv, errors, n_files, n_na_files, eps):
+def _report(rows, sv, errors, n_files, n_na_files, eps, cx=None, gm=None):
     print()
     print(HEADER)
     print("-" * len(HEADER))
@@ -369,12 +446,17 @@ def _report(rows, sv, errors, n_files, n_na_files, eps):
     print(_fmt_row("ALL", allr))
 
     n, f = allr[0], allr[1]
+    nd = n - allr[2] - allr[3]
     print()
     print(f"Scanned {n_files:,d} files ({n_na_files:,d} containing nucleic acid), "
           f"{n:,d} nucleic-acid residues")
-    if n:
-        pct = 100.0 * f / n
-        print(f"OP1/OP2 swapped: {f:,d} = {pct:.2f}%")
+    if cx and cx["n"]:
+        print(f"--na-only: excluded {cx['n']:,d} protein-nucleic acid complexes "
+              f"({cx['n_res']:,d} residues total, {cx['n_prot']:,d} of them protein)")
+    if nd:
+        pct = 100.0 * f / nd
+        print(f"OP1/OP2 swapped: {f:,d}/{nd:,d} decidable = {pct:.2f}%"
+              f"   ({100.0 * f / n:.2f}% of all {n:,d} NA residues)")
         if 40.0 <= pct <= 60.0:
             print("  => Near 50%: the original labelling is essentially uncorrelated")
             print("     with geometry. See the per-entry distribution below to tell")
@@ -393,15 +475,60 @@ def _report(rows, sv, errors, n_files, n_na_files, eps):
         print(f"Note: {allr[3]:,d} residues have a near-planar phosphate "
               f"(|sv| <= {eps:g}); the rule declines to decide.")
 
+    if gm and gm["n_valid"]:
+        nv = gm["n_valid"]
+        print()
+        print("Data quality (P-O bond lengths, A):")
+        print(f"  observed {gm['d_min']:.4g} - {gm['d_max']:.4g}"
+              f"    covalent P-O is 1.48-1.61, flag window [{P_O_MIN}, {P_O_MAX}]")
+        if gm["n_fill_leak"]:
+            print(f"  WARNING: {gm['n_fill_leak']:,d} residues pass coord_mask yet "
+                  f"hold a coordinate == {FILL_VALUE_COORDS:g}.")
+            print("           coord_mask tests only the x component, so placeholder")
+            print("           atoms leak through and the production rule decides")
+            print("           their handedness. They are excluded from the numbers")
+            print("           below, but NOT from the flip counts above.")
+        nb = gm["n_bad"]
+        if nb:
+            print(f"  {nb:,d} residues ({100.0 * nb / nv:.3f}% of {nv:,d} usable) "
+                  f"have a P-O distance outside [{P_O_MIN}, {P_O_MAX}]")
+            print("  -> broken coordinates, not refinement noise.")
+            nbd = gm["n_bad_decided"]
+            ngd = max(0, sv["n"] - nbd)
+            fb, fg = gm["n_flip_bad"], gm["n_flip_good"]
+            rb = f"{100.0 * fb / nbd:.2f}%" if nbd else "n/a"
+            rg = f"{100.0 * fg / ngd:.2f}%" if ngd else "n/a"
+            print(f"  flip rate, broken geometry: {fb:,d}/{nbd:,d} = {rb}")
+            print(f"  flip rate, sound geometry : {fg:,d}/{ngd:,d} = {rg}")
+            print("  A much higher rate in broken geometry means the flips are a")
+            print("  data-quality artifact, not a competing labelling convention.")
+        else:
+            print(f"  No P-O distance outside [{P_O_MIN}, {P_O_MAX}] among "
+                  f"{nv:,d} usable residues.")
+
     if sv["n"]:
         print()
         print(f"|signed volume| over the {sv['n']:,d} decided residues (A^3):")
         print(f"  min = {sv['min']:.4g}    max = {sv['max']:.4g}")
         for t, c in zip(SV_THRESHOLDS, sv["buckets"]):
             print(f"  |sv| < {t:<6g} : {c:,d}")
-        margin = sv["min"] / eps if eps else float("inf")
-        verdict = "eps is safe" if margin > 100 else "eps too large, lower it"
-        print(f"  min / eps = {margin:.3g}  ({verdict})")
+        if eps:
+            print(f"  min / eps = {sv['min'] / eps:.3g}")
+        # A small margin does not mean eps is too large -- the degenerate count
+        # above shows whether anything was actually skipped. It means some
+        # residues are decided on knife-edge geometry, so the remedy is to RAISE
+        # eps; lowering it would make those decisions more confident, not safer.
+        fragile = [(t, c) for t, c in zip(SV_THRESHOLDS, sv["buckets"]) if c]
+        if fragile:
+            t, c = fragile[0]
+            print(f"  WARNING: {c:,d} decided residues have |sv| < {t:g}. Their")
+            print("           handedness is numerically fragile -- float32 rounding")
+            print(f"           can flip the sign. Consider --eps {t:g} to skip them.")
+            print("           Lowering eps would make these decisions *more*")
+            print("           confident, which is the opposite of what is wanted.")
+        else:
+            print(f"  All decided residues have |sv| >= {SV_THRESHOLDS[-1]:g}; "
+                  f"eps={eps:g} sits well below the data.")
 
     if errors:
         print()
@@ -413,11 +540,12 @@ def _report(rows, sv, errors, n_files, n_na_files, eps):
 def _write_csv(path, rows):
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["restype", "n_res", "n_flipped", "flip_pct",
+        w.writerow(["restype", "n_res", "n_decided", "n_flipped", "flip_pct",
                     "n_missing_atom", "n_degenerate"])
         for nm in sorted(rows, key=lambda k: (k not in DNA_NAMES + RNA_NAMES, k)):
             n, f, mi, dg = rows[nm]
-            w.writerow([nm, n, f, f"{100.0 * f / n:.4f}" if n else "", mi, dg])
+            nd = n - mi - dg
+            w.writerow([nm, n, nd, f, f"{100.0 * f / nd:.4f}" if nd else "", mi, dg])
     print(f"\nCSV written to {path}")
 
 
@@ -426,7 +554,7 @@ def _write_entry_csv(path, entries, min_na_res):
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["entry", "n_na", "n_decided", "n_flipped", "flip_pct",
-                    "n_skipped", "included", "bucket"])
+                    "n_skipped", "n_bad_geom", "n_fill_leak", "included", "bucket"])
         for e in sorted(entries, key=lambda x: x["name"]):
             n_dec = e["n_na"] - e["n_skip"]
             included = n_dec >= min_na_res and n_dec > 0
@@ -434,7 +562,8 @@ def _write_entry_csv(path, entries, min_na_res):
             w.writerow([
                 e["name"], e["n_na"], n_dec, e["n_flip"],
                 f"{pct:.4f}" if pct is not None else "",
-                e["n_skip"], int(included),
+                e["n_skip"], e.get("n_bad", 0), e.get("n_fill_leak", 0),
+                int(included),
                 ENTRY_BUCKET_LABELS[_entry_bucket(pct)] if included else "",
             ])
     print(f"Per-entry CSV written to {path}")
@@ -475,6 +604,11 @@ def main():
                     help="per-entry distribution only includes entries with at "
                          "least this many decidable residues (default 4; too few "
                          "forces the rate to 0%%/100%%, inflating consistency)")
+    ap.add_argument("--na-only", action="store_true",
+                    help="keep only pure nucleic-acid entries: skip any entry "
+                         "containing a protein residue (protein-NA complexes). "
+                         "Note this cannot distinguish free NA from a NA chain "
+                         "that was extracted per-chain from a complex")
     ap.add_argument("--csv", default=None, help="also write a per-restype CSV")
     ap.add_argument("--by-entry-csv", default=None,
                     help="also write a per-entry CSV (includes excluded entries, "
@@ -492,15 +626,17 @@ def main():
         print(f"Scanning {len(paths)} .pt files, workers={args.workers}, "
               f"eps={args.eps:g}")
 
-    rows, sv, errors, n_files, n_na_files, entries = _collect(
-        paths, args.workers, args.eps, args.quiet
+    rows, sv, errors, n_files, n_na_files, entries, cx, gm = _collect(
+        paths, args.workers, args.eps, args.quiet, args.na_only
     )
     if not rows:
+        hint = (" With --na-only every entry may have been a protein-NA "
+                "complex; rerun without the flag to check." if args.na_only else "")
         sys.exit("ERROR: no nucleic-acid residues found -- check that the path "
                  "points at the preprocessed cache and that restype_list "
-                 "enables DNA/RNA")
+                 "enables DNA/RNA." + hint)
 
-    _report(rows, sv, errors, n_files, n_na_files, args.eps)
+    _report(rows, sv, errors, n_files, n_na_files, args.eps, cx, gm)
     _report_entries(entries, args.min_na_res)
     if args.csv:
         _write_csv(args.csv, rows)
