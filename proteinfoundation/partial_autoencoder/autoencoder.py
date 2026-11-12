@@ -452,7 +452,7 @@ class AutoEncoder(L.LightningModule):
             # err = err * token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             if mode == "mean":
                 nat = atom_mask.sum(dim=-1) * mask  # [b, n]
-                err = err / nat  # Take mean over existing atoms if mode == "mean"
+                err = err / (nat + eps)  # Take mean over existing atoms if mode == "mean"
             # err = err.sum(dim=-1) / nres  # [b]
             w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             err = (err * w).sum(dim=-1) / ((mask * w).sum(dim=-1) + eps)  # [b]
@@ -579,6 +579,7 @@ class AutoEncoder(L.LightningModule):
         log_scale: Float[Tensor, "b n d"],
         mask: Float[Tensor, "b n"],
         w: float,
+        eps: float = 1e-6,
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes KL penalty on the latent Gaussian distribution.
@@ -590,7 +591,7 @@ class AutoEncoder(L.LightningModule):
             mask=mask,
         )  # [b, n, d]
         kl_div = torch.sum(kl_div, dim=(-1, -2))  # [b]
-        kl_div = kl_div / nres  # [b]
+        kl_div = kl_div / (nres + eps)  # [b]
         loss = {
             "kl_w": kl_div * w,
             "kl_now_justlog": kl_div,
