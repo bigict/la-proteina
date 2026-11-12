@@ -101,6 +101,10 @@ check script_utils/stat_op1_op2_flip.py 2 'nd = n - mi - dg'
 # the eps advice must point at RAISING eps, never lowering it
 check script_utils/stat_op1_op2_flip.py 0 'eps too large, lower it'
 check script_utils/stat_op1_op2_flip.py 1 'Consider --eps'
+# n_res - missing - degenerate must equal the |sv| denominator: "missing" has to
+# include placeholder residues, not just coord_mask absences.
+check script_utils/stat_op1_op2_flip.py 1 'miss_rt = _bincount(rt[~valid], n_slots)'
+check script_utils/stat_op1_op2_flip.py 1 'n_flip_fill": int((flipped & present & is_fill).sum())'
 
 echo
 if [ "$fail" = 0 ]; then

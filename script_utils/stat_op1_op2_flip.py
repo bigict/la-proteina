@@ -181,7 +181,9 @@ def _scan_one(path_str, eps, na_only=False):
     rows = {}
     n_rt = _bincount(rt, n_slots)
     flip_rt = _bincount(rt[flipped], n_slots)
-    miss_rt = _bincount(rt[~present], n_slots)
+    # "missing" is everything the diagnostics cannot use, placeholders included,
+    # so that n_res - missing - degenerate equals the |sv| denominator exactly.
+    miss_rt = _bincount(rt[~valid], n_slots)
     degen_rt = _bincount(rt[degenerate], n_slots)
     for i in torch.nonzero(n_rt, as_tuple=True)[0].tolist():
         rows[IDX_TO_NAME.get(i, f"idx{i}")] = (
@@ -211,6 +213,7 @@ def _scan_one(path_str, eps, na_only=False):
             "n_bad_decided": int((bad_geom & decided).sum()),
             "n_flip_bad": int((flipped & bad_geom).sum()),
             "n_flip_good": int((flipped & decided & ~bad_geom).sum()),
+            "n_flip_fill": int((flipped & present & is_fill).sum()),
             "d_min": float(dp.min()),
             "d_max": float(dp.max()),
         }
@@ -248,7 +251,7 @@ def _collect(paths, workers, eps, quiet, na_only=False):
     errors, done, n_na_files = [], 0, 0
     cx = {"n": 0, "n_res": 0, "n_prot": 0}
     gm = {"n_valid": 0, "n_fill_leak": 0, "n_bad": 0, "n_bad_decided": 0,
-          "n_flip_bad": 0, "n_flip_good": 0,
+          "n_flip_bad": 0, "n_flip_good": 0, "n_flip_fill": 0,
           "d_min": float("inf"), "d_max": 0.0}
 
     def _merge(res):
@@ -281,7 +284,8 @@ def _collect(paths, workers, eps, quiet, na_only=False):
         gm["n_fill_leak"] += res.get("n_fill_leak", 0)
         g = res.get("geom")
         if g:
-            for k in ("n_valid", "n_bad", "n_bad_decided", "n_flip_bad", "n_flip_good"):
+            for k in ("n_valid", "n_bad", "n_bad_decided",
+                      "n_flip_bad", "n_flip_good", "n_flip_fill"):
                 gm[k] += g[k]
             gm["d_min"] = min(gm["d_min"], g["d_min"])
             gm["d_max"] = max(gm["d_max"], g["d_max"])
@@ -486,8 +490,11 @@ def _report(rows, sv, errors, n_files, n_na_files, eps, cx=None, gm=None):
                   f"hold a coordinate == {FILL_VALUE_COORDS:g}.")
             print("           coord_mask tests only the x component, so placeholder")
             print("           atoms leak through and the production rule decides")
-            print("           their handedness. They are excluded from the numbers")
-            print("           below, but NOT from the flip counts above.")
+            print("           their handedness.")
+            print(f"           {gm['n_flip_fill']:,d} of them were actually swapped. "
+                  f"They count as 'missing'")
+            print("           in the table above, so those swaps appear in n_flipped")
+            print("           but fall outside the flip% denominator.")
         nb = gm["n_bad"]
         if nb:
             print(f"  {nb:,d} residues ({100.0 * nb / nv:.3f}% of {nv:,d} usable) "
