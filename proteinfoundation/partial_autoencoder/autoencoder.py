@@ -608,6 +608,7 @@ class AutoEncoder(L.LightningModule):
             mask: Bool[torch.Tensor, "b n"],
             atom_mask: Bool[torch.Tensor, f"b n {rc.atom_type_num}"],
             mode: Literal["sum", "mean"] = "sum",
+            lty: Literal["l1", "l2"] = loss_ty,
         ) -> Float[torch.Tensor, "b"]:
             # nres = mask.sum(dim=-1)  # [b]
             err = torch.sum(err, dim=(-1, -2))  # [b, n]
@@ -616,7 +617,10 @@ class AutoEncoder(L.LightningModule):
                 nat = atom_mask.sum(dim=-1) * mask  # [b, n]
                 err = err / (nat + eps)  # Take mean over existing atoms if mode == "mean"
             # err = err.sum(dim=-1) / nres  # [b]
-            w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
+            if lty in self.cfg_ae.loss.struct:
+                w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct[lty])
+            else:
+                w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             err = (err * w).sum(dim=-1) / ((mask * w).sum(dim=-1) + eps)  # [b]
             return err
 
@@ -639,9 +643,11 @@ class AutoEncoder(L.LightningModule):
         losses["rmsd_no_align_a37_ang_justlog"] = rmsd
 
         err_l1 = reduce_37(
-            torch.abs(err), mask, atom_mask_true, mode=reduce_mode
+            torch.abs(err), mask, atom_mask_true, mode=reduce_mode, lty="l1"
         )  # L1 loss
-        err_l2 = reduce_37(err**2, mask, atom_mask_true, mode=reduce_mode)  # L2 loss
+        err_l2 = reduce_37(
+            err**2, mask, atom_mask_true, mode=reduce_mode, lty="l2"
+        )  # L2 loss
 
         if loss_ty == "l1":
             losses["struct_l1"] = err_l1 * weight
