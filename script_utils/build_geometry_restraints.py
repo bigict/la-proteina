@@ -310,8 +310,14 @@ def report(info, stats, rlo, rhi, tol_floor, tol_k, min_count, ideal,
            f"{'bond mean':>10s} {'bond std':>9s} {'max std':>8s} "
            f"{'min cnt':>9s} {'cover':>7s}")
     print(hdr); print("-" * len(hdr))
-    for k, (name, d) in enumerate(info.items()):
-        nrt = float(stats["n_by_type"][k]) if k < len(stats["n_by_type"]) else 0.0
+    # Look coverage up by restype name, not by position: relying on info's
+    # insertion order matching rlo..rhi would silently misalign the coverage
+    # column if that loop ever changed.
+    names = _idx_to_name()
+    n_by_name = {names.get(rlo + k, f"idx{rlo + k}"): float(stats["n_by_type"][k])
+                 for k in range(min(rhi - rlo + 1, len(stats["n_by_type"])))}
+    for name, d in info.items():
+        nrt = n_by_name.get(name, 0.0)
         if not d["n_bonds"]:
             print(f"{name:<8s} {d['n_atoms']:>6d} {0:>6d} {0:>6d} "
                   f"{'-':>10s} {'-':>9s} {'-':>8s} {'-':>9s} {'-':>7s}")
