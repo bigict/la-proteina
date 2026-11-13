@@ -43,6 +43,7 @@ import numpy as np
 import torch
 
 from openfold.np import residue_constants as rc
+from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens
 
 FILL_VALUE_COORDS = 1e-5  # protein_to_pyg placeholder for absent atoms
 BOND_CUTOFF = 1.8  # A; covalent bonds involving C/N/O/P are 1.2-1.7
@@ -82,13 +83,18 @@ def _idx_to_name():
 
 
 def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=False,
-              chir_spec=None):
+              chir_spec=None, vclip_center=None, vclip_half=None):
     """Accumulate count/sum/sumsq/min/max per (restype, atom pair). Worker side.
 
     clip_center/clip_half are flat [R*NPAIR] tensors; observations outside
     center +/- half are rejected before accumulation. track_bad additionally
     reports residues with any rejection, so they can be filtered from training
     rather than only from this table.
+
+    vclip_center/vclip_half are [C] tensors applying the same gate to the signed
+    volumes. They need their own clipping: a grossly misplaced neighbour inflates
+    a volume far more than it inflates any single bond length, so the distance
+    gate alone leaves the volume statistics contaminated.
     """
     path = Path(path_str)
     try:
@@ -112,11 +118,17 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
     sel = (rt >= rlo) & (rt <= rhi)
     if not bool(sel.any()):
         return {"ok": True, "stats": stats, "n_res": 0, "n_obs": 0, "n_rej": 0,
-                "bad": [], "n_by_type": torch.zeros(R, dtype=torch.float64)}
+                "n_vrej": 0, "bad": [],
+                "n_by_type": torch.zeros(R, dtype=torch.float64)}
 
     sel_idx = torch.nonzero(sel, as_tuple=True)[0]
     c = graph.coords[sel].double()
     m = graph.coord_mask[sel].bool()
+    # Match the training pipeline's convention (datasets/transforms.py). OP1/OP2
+    # naming is arbitrary in PDB entries, and the phosphate stereocentre's
+    # neighbour triple contains both, so an uncanonicalized label flips the
+    # signed volume even though the geometry is perfectly correct.
+    c = canonicalize_phosphate_oxygens(c, m)
     r = (rt[sel] - rlo).clamp(0, R - 1)
     # Per-type residue counts: a real covalent bond is present in essentially
     # every residue of its type, so coverage must be judged relative to this,
@@ -130,7 +142,7 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
     valid = ok[:, PAIR_I] & ok[:, PAIR_J] & (d < PAIR_CUTOFF) & torch.isfinite(d)
     n_obs = int(valid.sum())
     base = {"ok": True, "stats": stats, "n_res": int(sel.sum()),
-            "n_by_type": n_by_type, "n_obs": n_obs, "vol": None}
+            "n_by_type": n_by_type, "n_obs": n_obs, "n_vrej": 0, "vol": None}
     if n_obs == 0:
         return {**base, "n_rej": 0, "bad": []}
 
@@ -167,7 +179,7 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
     # Signed volume of each candidate centre's neighbour triple. Planar sp2
     # centres give ~0, pyramidal sp3 centres give a clearly non-zero value, so
     # the measurement itself separates them -- no hardcoded atom list.
-    vol_stats = None
+    vol_stats, n_vrej = None, 0
     if chir_spec is not None and chir_spec["n"] > 0:
         C = chir_spec["n"]
         cent, n1, n2, n3 = (chir_spec[k] for k in ("cent", "n1", "n2", "n3"))
@@ -182,6 +194,10 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
         spec_rt = chir_spec["rt"] - rlo
         okc = (ok[:, cent] & ok[:, n1] & ok[:, n2] & ok[:, n3]
                & (r[:, None] == spec_rt[None, :]) & torch.isfinite(vol))
+        if vclip_center is not None:
+            vrej = okc & ((vol - vclip_center).abs() > vclip_half)
+            n_vrej = int(vrej.sum())
+            okc = okc & ~vrej
         if bool(okc.any()):
             kc = torch.arange(C, device=vol.device).expand_as(vol)[okc]
             vv = vol[okc].to(torch.float64)
@@ -197,11 +213,11 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
             vmx.scatter_reduce_(0, kc, vv, reduce="amax", include_self=False)
             vol_stats = (vc, vs1, vs2, vmn, vmx)
 
-    return {**base, "n_rej": n_rej, "bad": bad, "vol": vol_stats}
+    return {**base, "n_rej": n_rej, "n_vrej": n_vrej, "bad": bad, "vol": vol_stats}
 
 
 def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
-             track_bad=False, chir_spec=None):
+             track_bad=False, chir_spec=None, vclip_center=None, vclip_half=None):
     R = rhi - rlo + 1
     shape = (R, NPAIR)
     cnt = torch.zeros(shape, dtype=torch.float64)
@@ -211,11 +227,11 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
     mx = torch.full(shape, float("-inf"), dtype=torch.float64)
     nbt = torch.zeros(R, dtype=torch.float64)
     errors, done, nres = [], 0, 0
-    n_obs_tot, n_rej_tot, bad = 0, 0, []
+    n_obs_tot, n_rej_tot, n_vrej_tot, bad = 0, 0, 0, []
     vol_acc = None
 
     def merge(res, fname):
-        nonlocal nres, n_obs_tot, n_rej_tot, vol_acc
+        nonlocal nres, n_obs_tot, n_rej_tot, n_vrej_tot, vol_acc
         if not res["ok"]:
             errors.append(res["err"])
             return
@@ -227,6 +243,7 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
         nres += res["n_res"]
         n_obs_tot += res["n_obs"]
         n_rej_tot += res["n_rej"]
+        n_vrej_tot += res.get("n_vrej", 0)
         for ri, rt, nrej, mxdev in res["bad"]:
             bad.append((fname, ri, rt, nrej, mxdev))
         v = res.get("vol")
@@ -247,12 +264,13 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
     if workers <= 1:
         for p in paths:
             merge(_scan_one(str(p), rlo, rhi, clip_center, clip_half, track_bad,
-                            chir_spec), Path(p).stem)
+                            chir_spec, vclip_center, vclip_half), Path(p).stem)
             tick()
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_scan_one, str(p), rlo, rhi, clip_center,
-                                clip_half, track_bad, chir_spec): Path(p).stem
+                                clip_half, track_bad, chir_spec,
+                                vclip_center, vclip_half): Path(p).stem
                     for p in paths}
             for f in as_completed(futs):
                 merge(f.result(), futs[f])
@@ -263,7 +281,7 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
     out = {"cnt": cnt, "mean": mean, "std": var.sqrt(), "min": mn, "max": mx,
            "n_by_type": nbt, "errors": errors, "n_res": nres,
            "n_files": len(paths), "n_obs": n_obs_tot, "n_rej": n_rej_tot,
-           "bad": bad, "vol": None}
+           "n_vrej": n_vrej_tot, "bad": bad, "vol": None}
     if vol_acc is not None:
         vc, vs1, vs2, vmn, vmx = vol_acc
         vmean = torch.where(vc > 0, vs1 / vc.clamp(min=1), torch.zeros_like(vs1))
@@ -606,14 +624,20 @@ def main():
                     help="write residues with any rejected observation, so they "
                          "can be filtered from training and not just this table")
     ap.add_argument("--chirality", action="store_true",
-                    help="run one extra pass measuring signed volumes at candidate "
-                         "stereocentres, to separate planar sp2 from pyramidal sp3 "
-                         "and record reference signs")
+                    help="measure signed volumes at candidate stereocentres, to "
+                         "separate planar sp2 from pyramidal sp3 and record "
+                         "reference signs; costs 1 + chir_iters extra scans")
     ap.add_argument("--chir-planar-tol", type=float, default=0.5,
                     help="|mean signed volume| below this (A^3) is treated as planar "
                          "sp2 and excluded; tetrahedral sp3 centres are ~2.5 A^3")
     ap.add_argument("--chir-tol-floor", type=float, default=0.2,
                     help="minimum signed-volume tolerance in A^3")
+    ap.add_argument("--chir-iters", type=int, default=1,
+                    help="sigma-clipping passes for the signed volumes after the "
+                         "initial chirality scan; each re-scans the corpus")
+    ap.add_argument("--chir-clip-floor", type=float, default=0.5,
+                    help="minimum volume clipping half-width in A^3, so a tight "
+                         "centre is not over-clipped (real spread is ~0.1 A^3)")
     ap.add_argument("--out", default="geometry_restraints.npz")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--quiet", action="store_true")
@@ -675,8 +699,9 @@ def main():
         else:
             if not args.quiet:
                 print(f"\nchirality pass: {spec['n']} candidate centres")
-            vs = _collect(paths, args.workers, rlo, rhi, args.quiet,
-                          chir_spec=spec)["vol"]
+            vres = _collect(paths, args.workers, rlo, rhi, args.quiet,
+                            chir_spec=spec)
+            vs = vres["vol"]
             if vs is None:
                 sys.exit(
                     "ERROR: chirality pass collected no samples. Every candidate "
@@ -684,6 +709,29 @@ def main():
                     "the spec match the scan range, and that the centre and its "
                     "three neighbours are present in coord_mask."
                 )
+            # Volumes need their own gate: a grossly misplaced neighbour reaches
+            # tens of A^3 while every individual bond length still looks
+            # plausible, so the distance clipping does not sanitize these.
+            for it in range(args.chir_iters):
+                vhalf = torch.maximum(
+                    args.clip_k * vs["std"],
+                    torch.full_like(vs["std"], args.chir_clip_floor))
+                if not args.quiet:
+                    print(f"chirality clip pass {it + 1}/{args.chir_iters} "
+                          f"(k={args.clip_k}, floor={args.chir_clip_floor} A^3)")
+                vres = _collect(paths, args.workers, rlo, rhi, args.quiet,
+                                chir_spec=spec, vclip_center=vs["mean"],
+                                vclip_half=vhalf)
+                vs = vres["vol"]
+                if vs is None:
+                    sys.exit(
+                        "ERROR: clipped chirality pass collected no samples; "
+                        "the volume clipping half-width is too tight."
+                    )
+            if not args.quiet and vres["n_vrej"]:
+                ntot = int(vs["cnt"].sum()) + vres["n_vrej"]
+                print(f"  volume observations rejected: {vres['n_vrej']:,} / "
+                      f"{ntot:,} ({100.0 * vres['n_vrej'] / max(ntot, 1):.3f}%)")
             names = _idx_to_name()
             hdr = (f"{'restype':<8s} {'centre':>7s} {'mean V':>9s} {'std V':>8s} "
                    f"{'min V':>9s} {'max V':>9s}  verdict")
