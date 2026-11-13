@@ -47,7 +47,19 @@ from openfold.np import residue_constants as rc
 FILL_VALUE_COORDS = 1e-5  # protein_to_pyg placeholder for absent atoms
 BOND_CUTOFF = 1.8  # A; covalent bonds involving C/N/O/P are 1.2-1.7
 PAIR_CUTOFF = 4.0  # A; generous enough to contain every 1-3 distance
-MIN_COUNT = 50  # pairs seen fewer times than this are not trusted
+MIN_COUNT = 50  # absolute floor; meaningless alone at 270k residues per type
+# A real covalent bond occurs in essentially every residue of its type, so the
+# binding constraint is coverage relative to that type's residue count. At full
+# scale real bonds sit at 96-98% coverage while spurious pairs sit at 0.04-0.5%,
+# so any threshold in between separates them cleanly.
+MIN_FRAC = 0.2
+# Unknown bases have inconsistent atom sets (residue_atoms["DX"] lists N1/C2 but
+# rigid_group_atom_positions["DX"] does not), so their graphs fracture.
+UNKNOWN_NAMES = ("DX", "X")
+# Independent cycles: sugar ring 1 + purine 2 / pyrimidine 1. Acceptance gate is
+# bonds == atoms - 1 + cycles for a connected graph.
+EXPECTED_CYCLES = {"DA": 3, "DC": 2, "DG": 3, "DT": 2,
+                   "A": 3, "C": 2, "G": 3, "U": 2}
 
 NATOM = rc.atom_type_num
 PAIR_I, PAIR_J = torch.triu_indices(NATOM, NATOM, offset=1)
@@ -91,11 +103,16 @@ def _scan_one(path_str, rlo, rhi):
     rt = graph.residue_type.long()
     sel = (rt >= rlo) & (rt <= rhi)
     if not bool(sel.any()):
-        return {"ok": True, "stats": (cnt, s1, s2, mn, mx), "n_res": 0}
+        return {"ok": True, "stats": (cnt, s1, s2, mn, mx), "n_res": 0,
+                "n_by_type": torch.zeros(R, dtype=torch.float64)}
 
     c = graph.coords[sel].double()
     m = graph.coord_mask[sel].bool()
     r = (rt[sel] - rlo).clamp(0, R - 1)
+    # Per-type residue counts: a real covalent bond is present in essentially
+    # every residue of its type, so coverage must be judged relative to this,
+    # not against an absolute count that is meaningless at 270k residues.
+    n_by_type = torch.bincount(r, minlength=R).to(torch.float64)
 
     # A placeholder coordinate is not a measurement; coord_mask only tests x.
     ok = m & ~(c == FILL_VALUE_COORDS).any(-1)
@@ -103,7 +120,8 @@ def _scan_one(path_str, rlo, rhi):
     d = (c[:, PAIR_I, :] - c[:, PAIR_J, :]).norm(dim=-1)  # [k, NPAIR]
     valid = ok[:, PAIR_I] & ok[:, PAIR_J] & (d < PAIR_CUTOFF) & torch.isfinite(d)
     if not bool(valid.any()):
-        return {"ok": True, "stats": (cnt, s1, s2, mn, mx), "n_res": int(sel.sum())}
+        return {"ok": True, "stats": (cnt, s1, s2, mn, mx),
+                "n_res": int(sel.sum()), "n_by_type": n_by_type}
 
     pidx = torch.arange(NPAIR, device=d.device).expand_as(d)
     key = (r[:, None] * NPAIR + pidx)[valid]
@@ -114,7 +132,8 @@ def _scan_one(path_str, rlo, rhi):
     s2.view(-1).index_add_(0, key, dv * dv)
     mn.view(-1).scatter_reduce_(0, key, dv, reduce="amin", include_self=False)
     mx.view(-1).scatter_reduce_(0, key, dv, reduce="amax", include_self=False)
-    return {"ok": True, "stats": (cnt, s1, s2, mn, mx), "n_res": int(sel.sum())}
+    return {"ok": True, "stats": (cnt, s1, s2, mn, mx),
+            "n_res": int(sel.sum()), "n_by_type": n_by_type}
 
 
 def _collect(paths, workers, rlo, rhi, quiet):
@@ -125,6 +144,7 @@ def _collect(paths, workers, rlo, rhi, quiet):
     s2 = torch.zeros(shape, dtype=torch.float64)
     mn = torch.full(shape, float("inf"), dtype=torch.float64)
     mx = torch.full(shape, float("-inf"), dtype=torch.float64)
+    nbt = torch.zeros(R, dtype=torch.float64)
     errors, done, nres = [], 0, 0
 
     def merge(res):
@@ -136,6 +156,7 @@ def _collect(paths, workers, rlo, rhi, quiet):
         cnt.add_(c_); s1.add_(a_); s2.add_(b_)
         torch.minimum(mn, lo_, out=mn)
         torch.maximum(mx, hi_, out=mx)
+        nbt.add_(res["n_by_type"])
         nres += res["n_res"]
 
     if workers <= 1:
@@ -156,7 +177,8 @@ def _collect(paths, workers, rlo, rhi, quiet):
     mean = torch.where(cnt > 0, s1 / cnt.clamp(min=1), torch.zeros_like(s1))
     var = (s2 / cnt.clamp(min=1) - mean ** 2).clamp(min=0)
     return {"cnt": cnt, "mean": mean, "std": var.sqrt(), "min": mn, "max": mx,
-            "errors": errors, "n_res": nres, "n_files": len(paths)}
+            "n_by_type": nbt, "errors": errors, "n_res": nres,
+            "n_files": len(paths)}
 
 
 def _build_graph(bonded):
@@ -203,7 +225,8 @@ def _ideal_intra_group_distances():
     return out
 
 
-def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
+def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count,
+                 min_frac=MIN_FRAC, include_unknown=False):
     """Return target/mask/tol/graph_dist in full atom65 layout, plus per-type info."""
     R = rhi - rlo + 1
     target = np.zeros((rc.restype_num + 1, NATOM, NATOM), dtype=np.float32)
@@ -216,6 +239,7 @@ def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
     for k in range(R):
         rt = rlo + k
         name = names.get(rt, f"idx{rt}")
+        n_res_type = float(stats["n_by_type"][k])
         cnt = stats["cnt"][k].numpy()
         mean = stats["mean"][k].numpy()
         std = stats["std"][k].numpy()
@@ -235,7 +259,15 @@ def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
             lo2[i, j] = lo2[j, i] = lo[p]
             hi2[i, j] = hi2[j, i] = hi[p]
 
-        trusted = c2 >= min_count
+        # Coverage relative to this type's residue count is the binding gate. An
+        # absolute count admits pairs seen only in a handful of broken entries:
+        # at full scale a spurious G "bond" had 101 observations out of 226,824
+        # residues (0.045%) and still passed min_count=50, giving G 26 bonds
+        # instead of 25. Real bonds sit at 96-98% coverage.
+        need = max(min_count, min_frac * n_res_type)
+        trusted = c2 >= need
+        if not include_unknown and name in UNKNOWN_NAMES:
+            trusted = np.zeros_like(trusted)
         bonded = trusted & (m2 > 0) & (m2 < BOND_CUTOFF)
         np.fill_diagonal(bonded, False)
         gd, adj = _build_graph(bonded)
@@ -262,27 +294,63 @@ def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
     return target, mask, tol, gdist, info
 
 
-def report(info, stats, rlo, rhi, tol_floor, tol_k, min_count, ideal):
+def report(info, stats, rlo, rhi, tol_floor, tol_k, min_count, ideal,
+           min_frac=MIN_FRAC, include_unknown=False):
     print()
     print("=" * 78)
     print("Derived restraints (bond-graph distance <= 2, torsion-independent)")
     print("=" * 78)
     print(f"residues scanned: {stats['n_res']:,}   files: {stats['n_files']:,}")
     print(f"bond cutoff {BOND_CUTOFF} A, pair cutoff {PAIR_CUTOFF} A, "
-          f"min count {min_count}, tol = max({tol_floor}, {tol_k}*std)")
+          f"tol = max({tol_floor}, {tol_k}*std)")
+    print(f"trust gate: count >= max({min_count}, {min_frac} * n_res_of_type)"
+          f"   unknown bases {'included' if include_unknown else 'excluded'}")
     print()
     hdr = (f"{'restype':<8s} {'atoms':>6s} {'bonds':>6s} {'1-3':>6s} "
-           f"{'bond mean':>10s} {'bond std':>9s} {'max std':>8s} {'min cnt':>9s}")
+           f"{'bond mean':>10s} {'bond std':>9s} {'max std':>8s} "
+           f"{'min cnt':>9s} {'cover':>7s}")
     print(hdr); print("-" * len(hdr))
-    for name, d in info.items():
+    for k, (name, d) in enumerate(info.items()):
+        nrt = float(stats["n_by_type"][k]) if k < len(stats["n_by_type"]) else 0.0
         if not d["n_bonds"]:
             print(f"{name:<8s} {d['n_atoms']:>6d} {0:>6d} {0:>6d} "
-                  f"{'-':>10s} {'-':>9s} {'-':>8s} {'-':>9s}")
+                  f"{'-':>10s} {'-':>9s} {'-':>8s} {'-':>9s} {'-':>7s}")
             continue
         bm, bs = d["bond_mean"], d["bond_std"]
+        mc = int(d["bond_cnt"].min())
+        cov = f"{100.0 * mc / nrt:.1f}%" if nrt else "-"
         print(f"{name:<8s} {d['n_atoms']:>6d} {d['n_bonds']:>6d} {d['n_13']:>6d} "
               f"{bm.mean():>10.4f} {bs.mean():>9.4f} {bs.max():>8.4f} "
-              f"{int(d['bond_cnt'].min()):>9,d}")
+              f"{mc:>9,d} {cov:>7s}")
+
+    # Acceptance gate: a connected bond graph must satisfy
+    # bonds == atoms - 1 + independent cycles. Excess means spurious edges
+    # (rare broken entries whose pair mean fell under the bond cutoff);
+    # shortfall means a fractured graph. Both invalidate the table.
+    print()
+    print("=" * 78)
+    print("Acceptance: bonds == atoms - 1 + cycles  (sugar 1 + purine 2 / pyrimidine 1)")
+    print("=" * 78)
+    n_fail = 0
+    for name, d in info.items():
+        if name not in EXPECTED_CYCLES:
+            print(f"  {name:<4s} skipped (unknown base, no expected cycle count)")
+            continue
+        exp = d["n_atoms"] - 1 + EXPECTED_CYCLES[name]
+        got = d["n_bonds"]
+        if got == exp:
+            print(f"  {name:<4s} atoms {d['n_atoms']:>2d}  bonds {got:>2d}  "
+                  f"expected {exp:>2d}  PASS")
+        else:
+            n_fail += 1
+            kind = "SPURIOUS EDGES" if got > exp else "FRACTURED GRAPH"
+            print(f"  {name:<4s} atoms {d['n_atoms']:>2d}  bonds {got:>2d}  "
+                  f"expected {exp:>2d}  FAIL ({got - exp:+d}, {kind})")
+    if n_fail:
+        print(f"\n  {n_fail} restype(s) FAILED -- do not use this table. "
+              f"Raise --min-frac, or inspect the low-coverage pairs in the CSV.")
+    else:
+        print("\n  All standard restypes PASS.")
 
     print()
     print("=" * 78)
@@ -368,6 +436,13 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     ap.add_argument("--min-count", type=int, default=MIN_COUNT)
+    ap.add_argument("--min-frac", type=float, default=MIN_FRAC,
+                    help="trust a pair only if seen in at least this fraction of "
+                         "its restype's residues. This is the binding gate at "
+                         "full scale, where an absolute count is meaningless")
+    ap.add_argument("--include-unknown", action="store_true",
+                    help="also build restraints for DX/X; their atom sets are "
+                         "inconsistent so their bond graphs fracture")
     ap.add_argument("--tol-floor", type=float, default=0.02,
                     help="minimum tolerance in A (covalent tolerance)")
     ap.add_argument("--tol-k", type=float, default=2.0,
@@ -401,14 +476,15 @@ def main():
         sys.exit("ERROR: no residues of the requested types found")
 
     target, mask, tol, gdist, info = build_tables(
-        stats, rlo, rhi, args.tol_floor, args.tol_k, args.min_count)
+        stats, rlo, rhi, args.tol_floor, args.tol_k, args.min_count,
+        args.min_frac, args.include_unknown)
     report(info, stats, rlo, rhi, args.tol_floor, args.tol_k, args.min_count,
-           _ideal_intra_group_distances())
+           _ideal_intra_group_distances(), args.min_frac, args.include_unknown)
 
     np.savez_compressed(args.out, target=target, mask=mask, tol=tol,
                         graph_dist=gdist, rlo=rlo, rhi=rhi,
                         bond_cutoff=BOND_CUTOFF, tol_floor=args.tol_floor,
-                        tol_k=args.tol_k)
+                        tol_k=args.tol_k, min_frac=args.min_frac)
     print(f"\nRestraint tables written to {args.out}")
     print(f"  constrained pairs total: {int(mask.sum() // 2):,}")
     if args.csv:
