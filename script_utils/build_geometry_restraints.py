@@ -219,15 +219,21 @@ def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
         cnt = stats["cnt"][k].numpy()
         mean = stats["mean"][k].numpy()
         std = stats["std"][k].numpy()
+        lo = stats["min"][k].numpy()
+        hi = stats["max"][k].numpy()
 
         m2 = np.zeros((NATOM, NATOM), dtype=np.float64)
         c2 = np.zeros_like(m2)
         s2 = np.zeros_like(m2)
+        lo2 = np.zeros_like(m2)
+        hi2 = np.zeros_like(m2)
         for p in range(NPAIR):
             i, j = int(PAIR_I[p]), int(PAIR_J[p])
             m2[i, j] = m2[j, i] = mean[p]
             c2[i, j] = c2[j, i] = cnt[p]
             s2[i, j] = s2[j, i] = std[p]
+            lo2[i, j] = lo2[j, i] = lo[p]
+            hi2[i, j] = hi2[j, i] = hi[p]
 
         trusted = c2 >= min_count
         bonded = trusted & (m2 > 0) & (m2 < BOND_CUTOFF)
@@ -250,6 +256,7 @@ def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count):
             "bond_mean": m2[bonded], "bond_std": s2[bonded],
             "bond_cnt": c2[bonded],
             "gd": gd, "bonded": bonded, "m2": m2, "s2": s2, "c2": c2,
+            "lo2": lo2, "hi2": hi2,
             "adj": adj,
         }
     return target, mask, tol, gdist, info
@@ -331,7 +338,8 @@ def write_csv(path, info, mask, target, tol, gdist, rlo, rhi):
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["restype", "atom_i", "atom_j", "graph_dist", "target_A",
-                    "tol_A", "observed_std_A", "n_obs"])
+                    "tol_A", "observed_std_A", "observed_min_A", "observed_max_A",
+                    "n_obs"])
         for k in range(rhi - rlo + 1):
             rt = rlo + k
             name = names.get(rt, f"idx{rt}")
@@ -340,9 +348,13 @@ def write_csv(path, info, mask, target, tol, gdist, rlo, rhi):
                 i, j = int(PAIR_I[p]), int(PAIR_J[p])
                 if not mask[rt, i, j]:
                     continue
+                # min/max distinguish outlier pollution (max far above target)
+                # from genuine spread (max close to target), which decides
+                # whether a loose bond needs filtering or a wider tolerance.
                 w.writerow([name, rc.atom_types[i], rc.atom_types[j],
                             int(gdist[rt, i, j]), f"{target[rt, i, j]:.4f}",
                             f"{tol[rt, i, j]:.4f}", f"{d['s2'][i, j]:.4f}",
+                            f"{d['lo2'][i, j]:.4f}", f"{d['hi2'][i, j]:.4f}",
                             int(d["c2"][i, j])])
     print(f"\nCSV written to {path}")
 
