@@ -81,8 +81,14 @@ def _idx_to_name():
             for i, one in enumerate(rc.restypes)}
 
 
-def _scan_one(path_str, rlo, rhi):
-    """Accumulate count/sum/sumsq/min/max per (restype, atom pair). Worker side."""
+def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=False):
+    """Accumulate count/sum/sumsq/min/max per (restype, atom pair). Worker side.
+
+    clip_center/clip_half are flat [R*NPAIR] tensors; observations outside
+    center +/- half are rejected before accumulation. track_bad additionally
+    reports residues with any rejection, so they can be filtered from training
+    rather than only from this table.
+    """
     path = Path(path_str)
     try:
         graph = torch.load(path, map_location="cpu", weights_only=False)
@@ -99,13 +105,15 @@ def _scan_one(path_str, rlo, rhi):
     s2 = torch.zeros(shape, dtype=torch.float64)
     mn = torch.full(shape, float("inf"), dtype=torch.float64)
     mx = torch.full(shape, float("-inf"), dtype=torch.float64)
+    stats = (cnt, s1, s2, mn, mx)
 
     rt = graph.residue_type.long()
     sel = (rt >= rlo) & (rt <= rhi)
     if not bool(sel.any()):
-        return {"ok": True, "stats": (cnt, s1, s2, mn, mx), "n_res": 0,
-                "n_by_type": torch.zeros(R, dtype=torch.float64)}
+        return {"ok": True, "stats": stats, "n_res": 0, "n_obs": 0, "n_rej": 0,
+                "bad": [], "n_by_type": torch.zeros(R, dtype=torch.float64)}
 
+    sel_idx = torch.nonzero(sel, as_tuple=True)[0]
     c = graph.coords[sel].double()
     m = graph.coord_mask[sel].bool()
     r = (rt[sel] - rlo).clamp(0, R - 1)
@@ -119,12 +127,34 @@ def _scan_one(path_str, rlo, rhi):
 
     d = (c[:, PAIR_I, :] - c[:, PAIR_J, :]).norm(dim=-1)  # [k, NPAIR]
     valid = ok[:, PAIR_I] & ok[:, PAIR_J] & (d < PAIR_CUTOFF) & torch.isfinite(d)
-    if not bool(valid.any()):
-        return {"ok": True, "stats": (cnt, s1, s2, mn, mx),
-                "n_res": int(sel.sum()), "n_by_type": n_by_type}
+    n_obs = int(valid.sum())
+    base = {"ok": True, "stats": stats, "n_res": int(sel.sum()),
+            "n_by_type": n_by_type, "n_obs": n_obs}
+    if n_obs == 0:
+        return {**base, "n_rej": 0, "bad": []}
 
     pidx = torch.arange(NPAIR, device=d.device).expand_as(d)
-    key = (r[:, None] * NPAIR + pidx)[valid]
+    flat_key = r[:, None] * NPAIR + pidx
+
+    n_rej, bad = 0, []
+    if clip_center is not None:
+        dev = (d - clip_center[flat_key]).abs()
+        rejected = valid & (dev > clip_half[flat_key])
+        n_rej = int(rejected.sum())
+        if track_bad and n_rej:
+            per_res = rejected.sum(dim=1)
+            hit = torch.nonzero(per_res > 0, as_tuple=True)[0]
+            maxdev = dev.masked_fill(~rejected, 0.0).max(dim=1).values
+            rt_sel = rt[sel]
+            for t in hit.tolist():
+                bad.append((int(sel_idx[t]), int(rt_sel[t]),
+                            int(per_res[t]), float(maxdev[t])))
+        valid = valid & ~rejected
+
+    if not bool(valid.any()):
+        return {**base, "n_rej": n_rej, "bad": bad}
+
+    key = flat_key[valid]
     dv = d[valid].to(torch.float64)
 
     cnt.view(-1).index_add_(0, key, torch.ones_like(dv))
@@ -132,11 +162,11 @@ def _scan_one(path_str, rlo, rhi):
     s2.view(-1).index_add_(0, key, dv * dv)
     mn.view(-1).scatter_reduce_(0, key, dv, reduce="amin", include_self=False)
     mx.view(-1).scatter_reduce_(0, key, dv, reduce="amax", include_self=False)
-    return {"ok": True, "stats": (cnt, s1, s2, mn, mx),
-            "n_res": int(sel.sum()), "n_by_type": n_by_type}
+    return {**base, "n_rej": n_rej, "bad": bad}
 
 
-def _collect(paths, workers, rlo, rhi, quiet):
+def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
+             track_bad=False):
     R = rhi - rlo + 1
     shape = (R, NPAIR)
     cnt = torch.zeros(shape, dtype=torch.float64)
@@ -146,9 +176,10 @@ def _collect(paths, workers, rlo, rhi, quiet):
     mx = torch.full(shape, float("-inf"), dtype=torch.float64)
     nbt = torch.zeros(R, dtype=torch.float64)
     errors, done, nres = [], 0, 0
+    n_obs_tot, n_rej_tot, bad = 0, 0, []
 
-    def merge(res):
-        nonlocal nres
+    def merge(res, fname):
+        nonlocal nres, n_obs_tot, n_rej_tot
         if not res["ok"]:
             errors.append(res["err"])
             return
@@ -158,27 +189,36 @@ def _collect(paths, workers, rlo, rhi, quiet):
         torch.maximum(mx, hi_, out=mx)
         nbt.add_(res["n_by_type"])
         nres += res["n_res"]
+        n_obs_tot += res["n_obs"]
+        n_rej_tot += res["n_rej"]
+        for ri, rt, nrej, mxdev in res["bad"]:
+            bad.append((fname, ri, rt, nrej, mxdev))
+
+    def tick():
+        nonlocal done
+        done += 1
+        if not quiet and done % 500 == 0:
+            print(f"  ... {done}/{len(paths)}", file=sys.stderr)
 
     if workers <= 1:
         for p in paths:
-            merge(_scan_one(str(p), rlo, rhi))
-            done += 1
-            if not quiet and done % 500 == 0:
-                print(f"  ... {done}/{len(paths)}", file=sys.stderr)
+            merge(_scan_one(str(p), rlo, rhi, clip_center, clip_half, track_bad),
+                  Path(p).stem)
+            tick()
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_scan_one, str(p), rlo, rhi) for p in paths]
+            futs = {pool.submit(_scan_one, str(p), rlo, rhi, clip_center,
+                                clip_half, track_bad): Path(p).stem for p in paths}
             for f in as_completed(futs):
-                merge(f.result())
-                done += 1
-                if not quiet and done % 500 == 0:
-                    print(f"  ... {done}/{len(paths)}", file=sys.stderr)
+                merge(f.result(), futs[f])
+                tick()
 
     mean = torch.where(cnt > 0, s1 / cnt.clamp(min=1), torch.zeros_like(s1))
     var = (s2 / cnt.clamp(min=1) - mean ** 2).clamp(min=0)
     return {"cnt": cnt, "mean": mean, "std": var.sqrt(), "min": mn, "max": mx,
             "n_by_type": nbt, "errors": errors, "n_res": nres,
-            "n_files": len(paths)}
+            "n_files": len(paths), "n_obs": n_obs_tot, "n_rej": n_rej_tot,
+            "bad": bad}
 
 
 def _build_graph(bonded):
@@ -301,6 +341,11 @@ def report(info, stats, rlo, rhi, tol_floor, tol_k, min_count, ideal,
     print("Derived restraints (bond-graph distance <= 2, torsion-independent)")
     print("=" * 78)
     print(f"residues scanned: {stats['n_res']:,}   files: {stats['n_files']:,}")
+    if stats.get("n_obs"):
+        rej = stats.get("n_rej", 0)
+        print(f"observations: {stats['n_obs']:,} considered, {rej:,} rejected "
+              f"({100.0 * rej / stats['n_obs']:.3f}%)   "
+              f"residues with a rejection: {len(stats.get('bad', [])):,}")
     print(f"bond cutoff {BOND_CUTOFF} A, pair cutoff {PAIR_CUTOFF} A, "
           f"tol = max({tol_floor}, {tol_k}*std)")
     print(f"trust gate: count >= max({min_count}, {min_frac} * n_res_of_type)"
@@ -433,6 +478,23 @@ def write_csv(path, info, mask, target, tol, gdist, rlo, rhi):
     print(f"\nCSV written to {path}")
 
 
+def write_bad_csv(path, bad):
+    """Residues with at least one rejected observation.
+
+    These coordinates are also the model's training targets, so the list is for
+    filtering training data, not just for cleaning this table.
+    """
+    names = _idx_to_name()
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["entry", "residue_index", "restype", "n_rejected_pairs",
+                    "max_deviation_A"])
+        for fname, ri, rt, nrej, mxdev in sorted(bad):
+            w.writerow([fname, ri, names.get(rt, f"idx{rt}"), nrej,
+                        f"{mxdev:.4f}"])
+    print(f"Bad-residue CSV written to {path} ({len(bad):,} residues)")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Derive torsion-independent distance restraints from the cache")
@@ -453,6 +515,19 @@ def main():
                     help="minimum tolerance in A (covalent tolerance)")
     ap.add_argument("--tol-k", type=float, default=2.0,
                     help="tolerance = max(tol_floor, tol_k * observed std)")
+    ap.add_argument("--clip-iters", type=int, default=1,
+                    help="sigma-clipping passes after the initial scan; each "
+                         "re-scans the corpus, so 1 means 2 scans total")
+    ap.add_argument("--clip-k", type=float, default=3.0,
+                    help="reject observations farther than clip_k * std from "
+                         "the previous pass's mean")
+    ap.add_argument("--clip-floor", type=float, default=0.1,
+                    help="minimum clipping half-width in A, so an already-tight "
+                         "pair is not over-clipped (real refinement spread is "
+                         "~0.02 A)")
+    ap.add_argument("--bad-csv", default=None,
+                    help="write residues with any rejected observation, so they "
+                         "can be filtered from training and not just this table")
     ap.add_argument("--out", default="geometry_restraints.npz")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--quiet", action="store_true")
@@ -481,6 +556,22 @@ def main():
     if stats["n_res"] == 0:
         sys.exit("ERROR: no residues of the requested types found")
 
+    # Sigma-clipping. The initial std is inflated by gross outliers (~0.5% of
+    # base-ring observations pile up just under the 4 A accumulation cutoff), so
+    # a k*std gate built from it still removes them. The floor keeps an
+    # already-tight pair from being over-clipped. Only the final pass tracks bad
+    # residues, so the list reflects the tightest gate.
+    for it in range(args.clip_iters):
+        half = torch.maximum(args.clip_k * stats["std"],
+                             torch.full_like(stats["std"], args.clip_floor))
+        if not args.quiet:
+            print(f"clip pass {it + 1}/{args.clip_iters} "
+                  f"(k={args.clip_k}, floor={args.clip_floor} A)")
+        stats = _collect(paths, args.workers, rlo, rhi, args.quiet,
+                         clip_center=stats["mean"].reshape(-1),
+                         clip_half=half.reshape(-1),
+                         track_bad=(it == args.clip_iters - 1))
+
     target, mask, tol, gdist, info = build_tables(
         stats, rlo, rhi, args.tol_floor, args.tol_k, args.min_count,
         args.min_frac, args.include_unknown)
@@ -495,6 +586,8 @@ def main():
     print(f"  constrained pairs total: {int(mask.sum() // 2):,}")
     if args.csv:
         write_csv(args.csv, info, mask, target, tol, gdist, rlo, rhi)
+    if args.bad_csv:
+        write_bad_csv(args.bad_csv, stats["bad"])
     if stats["errors"]:
         print(f"\n{len(stats['errors'])} files failed; first 5:", file=sys.stderr)
         for e in stats["errors"][:5]:
