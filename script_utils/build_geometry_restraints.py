@@ -176,8 +176,12 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
         e2 = c[:, n2, :] - pc
         e3 = c[:, n3, :] - pc
         vol = (e1 * torch.cross(e2, e3, dim=-1)).sum(-1)  # [k, C]
+        # r is an offset into [rlo, rhi] while the spec stores absolute restype
+        # indices, so shift the spec before comparing. Comparing them directly
+        # never matches and silently yields no volume samples at all.
+        spec_rt = chir_spec["rt"] - rlo
         okc = (ok[:, cent] & ok[:, n1] & ok[:, n2] & ok[:, n3]
-               & (r[:, None] == chir_spec["rt"][None, :]) & torch.isfinite(vol))
+               & (r[:, None] == spec_rt[None, :]) & torch.isfinite(vol))
         if bool(okc.any()):
             kc = torch.arange(C, device=vol.device).expand_as(vol)[okc]
             vv = vol[okc].to(torch.float64)
@@ -673,6 +677,13 @@ def main():
                 print(f"\nchirality pass: {spec['n']} candidate centres")
             vs = _collect(paths, args.workers, rlo, rhi, args.quiet,
                           chir_spec=spec)["vol"]
+            if vs is None:
+                sys.exit(
+                    "ERROR: chirality pass collected no samples. Every candidate "
+                    "centre was masked out -- check that the restype indices in "
+                    "the spec match the scan range, and that the centre and its "
+                    "three neighbours are present in coord_mask."
+                )
             names = _idx_to_name()
             hdr = (f"{'restype':<8s} {'centre':>7s} {'mean V':>9s} {'std V':>8s} "
                    f"{'min V':>9s} {'max V':>9s}  verdict")
