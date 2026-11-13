@@ -43,10 +43,12 @@ import re
 from typing import Any, Mapping, Optional
 
 import numpy as np
+import torch
 from Bio.PDB import PDBParser
 
 from openfold.np import residue_constants
 from openfold.np.protein import Protein
+from proteinfoundation.utils.coors_utils import canonicalize_phosphate_oxygens
 
 FeatureDict = Mapping[str, np.ndarray]
 ModelOutput = Mapping[str, Any]  # Is a nested dict.
@@ -352,9 +354,18 @@ def from_pdb_string(pdb_str: str, chain_id: Optional[str] = None) -> Protein:
     chain_id_mapping = {cid: n for n, cid in enumerate(unique_chain_ids)}
     chain_index = np.array([chain_id_mapping[cid] for cid in chain_ids])
 
+    atom_positions = np.array(atom_positions)
+    atom_mask = np.array(atom_mask)
+    # Same OP1/OP2 rule as the training pipeline, so name-matched metrics
+    # (e.g. RMSD against a reference) compare like with like.
+    if atom_positions.size:
+        atom_positions = canonicalize_phosphate_oxygens(
+            torch.from_numpy(atom_positions), torch.from_numpy(atom_mask).bool()
+        ).numpy()
+
     return Protein(
-        atom_positions=np.array(atom_positions),
-        atom_mask=np.array(atom_mask),
+        atom_positions=atom_positions,
+        atom_mask=atom_mask,
         aatype=np.array(aatype),
         residue_index=np.array(residue_index),
         chain_index=chain_index,
