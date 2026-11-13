@@ -59,12 +59,30 @@ class GeometryRestraintTable:
         self.n_pairs = int(len(ii))
         self.n_restrained = int(mask.sum() // 2)
 
+        # Chirality is optional: a table built without --chirality has no such
+        # arrays, and the distance term still works on its own.
+        self.n_chiral = 0
+        if "chir_rt" in z.files and len(z["chir_rt"]) > 0:
+            self.chir_rt = torch.as_tensor(z["chir_rt"], dtype=torch.long)
+            self.chir_cent = torch.as_tensor(z["chir_cent"], dtype=torch.long)
+            self.chir_n1 = torch.as_tensor(z["chir_n1"], dtype=torch.long)
+            self.chir_n2 = torch.as_tensor(z["chir_n2"], dtype=torch.long)
+            self.chir_n3 = torch.as_tensor(z["chir_n3"], dtype=torch.long)
+            vscale = ANG_PER_NM ** 3  # A^3 -> nm^3
+            self.chir_target = torch.as_tensor(z["chir_target"], dtype=torch.float32) / vscale
+            self.chir_tol = torch.as_tensor(z["chir_tol"], dtype=torch.float32) / vscale
+            self.n_chiral = int(len(self.chir_rt))
+
     def to(self, device) -> "GeometryRestraintTable":
         self.pair_i = self.pair_i.to(device)
         self.pair_j = self.pair_j.to(device)
         self.target = self.target.to(device)
         self.tol = self.tol.to(device)
         self.valid = self.valid.to(device)
+        if self.n_chiral:
+            for k in ("chir_rt", "chir_cent", "chir_n1", "chir_n2", "chir_n3",
+                      "chir_target", "chir_tol"):
+                setattr(self, k, getattr(self, k).to(device))
         return self
 
 
@@ -82,6 +100,7 @@ def compute_geom_restraint_loss(
     residue_mask: Bool[Tensor, "b n"],
     table: GeometryRestraintTable,
     weight: float,
+    chir_weight: float = 0.0,
     na_only: bool = True,
 ) -> Dict[str, Float[Tensor, "b"]]:
     """Flat-bottom penalty on restrained distances, plus logging-only diagnostics.
@@ -96,7 +115,9 @@ def compute_geom_restraint_loss(
         coord_mask: ground-truth atom presence, [b, n, atom_type_num]
         residue_mask: valid residues, [b, n]
         table: loaded restraint table
-        weight: multiplies the returned geom loss; 0 disables it
+        weight: multiplies the distance term; 0 disables it
+        chir_weight: multiplies the signed-volume term; 0 disables it. Requires
+            a table built with --chirality, otherwise it is silently inert.
         na_only: restrict to nucleic-acid residues (protein geometry is already
             well learned by the pretrained model)
 
@@ -131,4 +152,33 @@ def compute_geom_restraint_loss(
         "geom_excess_mean_ang_justlog": excess_ang.sum(dim=(-1, -2)) / (n_viol + EPS),
         "geom_excess_max_ang_justlog": excess_ang.amax(dim=(-1, -2)),
     }
+
+    # Chirality. Distances cannot fix handedness: a mirror image has identical
+    # pairwise distances. Given the restrained bond lengths and angles there are
+    # still two enantiomers, with signed volumes +|V| and -|V|, so a flat-bottom
+    # penalty on the signed volume selects the observed one.
+    if table.n_chiral:
+        match = residue_type[..., None] == table.chir_rt  # [b, n, K]
+        pc = coors_nm[..., table.chir_cent, :]            # [b, n, K, 3]
+        e1 = coors_nm[..., table.chir_n1, :] - pc
+        e2 = coors_nm[..., table.chir_n2, :] - pc
+        e3 = coors_nm[..., table.chir_n3, :] - pc
+        vol = (e1 * torch.cross(e2, e3, dim=-1)).sum(-1)  # [b, n, K], nm^3
+        okc = (match & residue_mask[..., None]
+               & coord_mask[..., table.chir_cent] & coord_mask[..., table.chir_n1]
+               & coord_mask[..., table.chir_n2] & coord_mask[..., table.chir_n3])
+        if na_only:
+            okc = okc & _is_na(residue_type)[..., None]
+        exc_c = torch.clamp((vol - table.chir_target).abs() - table.chir_tol, min=0.0)
+        pen_c = (exc_c ** 2) * okc
+        denom_c = okc.any(dim=-1).sum(dim=-1).to(pen_c.dtype)
+        n_okc = okc.sum(dim=(-1, -2)).to(pen_c.dtype)
+        n_violc = (okc & (exc_c > 0)).sum(dim=(-1, -2)).to(pen_c.dtype)
+        n_wrong = (okc & (vol * table.chir_target < 0)).sum(dim=(-1, -2)).to(pen_c.dtype)
+        out["geom_chir"] = pen_c.sum(dim=(-1, -2)) / (denom_c + EPS) * chir_weight
+        out["geom_chir_viol_frac_justlog"] = n_violc / (n_okc + EPS)
+        out["geom_chir_wrongsign_frac_justlog"] = n_wrong / (n_okc + EPS)
+        out["geom_chir_excess_max_ang3_justlog"] = (
+            (exc_c * okc).amax(dim=(-1, -2)) * ANG_PER_NM ** 3
+        )
     return out
