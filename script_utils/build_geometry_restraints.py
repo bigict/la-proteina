@@ -81,7 +81,8 @@ def _idx_to_name():
             for i, one in enumerate(rc.restypes)}
 
 
-def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=False):
+def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=False,
+              chir_spec=None):
     """Accumulate count/sum/sumsq/min/max per (restype, atom pair). Worker side.
 
     clip_center/clip_half are flat [R*NPAIR] tensors; observations outside
@@ -129,7 +130,7 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
     valid = ok[:, PAIR_I] & ok[:, PAIR_J] & (d < PAIR_CUTOFF) & torch.isfinite(d)
     n_obs = int(valid.sum())
     base = {"ok": True, "stats": stats, "n_res": int(sel.sum()),
-            "n_by_type": n_by_type, "n_obs": n_obs}
+            "n_by_type": n_by_type, "n_obs": n_obs, "vol": None}
     if n_obs == 0:
         return {**base, "n_rej": 0, "bad": []}
 
@@ -162,11 +163,41 @@ def _scan_one(path_str, rlo, rhi, clip_center=None, clip_half=None, track_bad=Fa
     s2.view(-1).index_add_(0, key, dv * dv)
     mn.view(-1).scatter_reduce_(0, key, dv, reduce="amin", include_self=False)
     mx.view(-1).scatter_reduce_(0, key, dv, reduce="amax", include_self=False)
-    return {**base, "n_rej": n_rej, "bad": bad}
+
+    # Signed volume of each candidate centre's neighbour triple. Planar sp2
+    # centres give ~0, pyramidal sp3 centres give a clearly non-zero value, so
+    # the measurement itself separates them -- no hardcoded atom list.
+    vol_stats = None
+    if chir_spec is not None and chir_spec["n"] > 0:
+        C = chir_spec["n"]
+        cent, n1, n2, n3 = (chir_spec[k] for k in ("cent", "n1", "n2", "n3"))
+        pc = c[:, cent, :]
+        e1 = c[:, n1, :] - pc
+        e2 = c[:, n2, :] - pc
+        e3 = c[:, n3, :] - pc
+        vol = (e1 * torch.cross(e2, e3, dim=-1)).sum(-1)  # [k, C]
+        okc = (ok[:, cent] & ok[:, n1] & ok[:, n2] & ok[:, n3]
+               & (r[:, None] == chir_spec["rt"][None, :]) & torch.isfinite(vol))
+        if bool(okc.any()):
+            kc = torch.arange(C, device=vol.device).expand_as(vol)[okc]
+            vv = vol[okc].to(torch.float64)
+            vc = torch.zeros(C, dtype=torch.float64)
+            vs1 = torch.zeros(C, dtype=torch.float64)
+            vs2 = torch.zeros(C, dtype=torch.float64)
+            vmn = torch.full((C,), float("inf"), dtype=torch.float64)
+            vmx = torch.full((C,), float("-inf"), dtype=torch.float64)
+            vc.index_add_(0, kc, torch.ones_like(vv))
+            vs1.index_add_(0, kc, vv)
+            vs2.index_add_(0, kc, vv * vv)
+            vmn.scatter_reduce_(0, kc, vv, reduce="amin", include_self=False)
+            vmx.scatter_reduce_(0, kc, vv, reduce="amax", include_self=False)
+            vol_stats = (vc, vs1, vs2, vmn, vmx)
+
+    return {**base, "n_rej": n_rej, "bad": bad, "vol": vol_stats}
 
 
 def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
-             track_bad=False):
+             track_bad=False, chir_spec=None):
     R = rhi - rlo + 1
     shape = (R, NPAIR)
     cnt = torch.zeros(shape, dtype=torch.float64)
@@ -177,9 +208,10 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
     nbt = torch.zeros(R, dtype=torch.float64)
     errors, done, nres = [], 0, 0
     n_obs_tot, n_rej_tot, bad = 0, 0, []
+    vol_acc = None
 
     def merge(res, fname):
-        nonlocal nres, n_obs_tot, n_rej_tot
+        nonlocal nres, n_obs_tot, n_rej_tot, vol_acc
         if not res["ok"]:
             errors.append(res["err"])
             return
@@ -193,6 +225,14 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
         n_rej_tot += res["n_rej"]
         for ri, rt, nrej, mxdev in res["bad"]:
             bad.append((fname, ri, rt, nrej, mxdev))
+        v = res.get("vol")
+        if v is not None:
+            if vol_acc is None:
+                vol_acc = [t.clone() for t in v]
+            else:
+                vol_acc[0].add_(v[0]); vol_acc[1].add_(v[1]); vol_acc[2].add_(v[2])
+                torch.minimum(vol_acc[3], v[3], out=vol_acc[3])
+                torch.maximum(vol_acc[4], v[4], out=vol_acc[4])
 
     def tick():
         nonlocal done
@@ -202,23 +242,31 @@ def _collect(paths, workers, rlo, rhi, quiet, clip_center=None, clip_half=None,
 
     if workers <= 1:
         for p in paths:
-            merge(_scan_one(str(p), rlo, rhi, clip_center, clip_half, track_bad),
-                  Path(p).stem)
+            merge(_scan_one(str(p), rlo, rhi, clip_center, clip_half, track_bad,
+                            chir_spec), Path(p).stem)
             tick()
     else:
         with ProcessPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(_scan_one, str(p), rlo, rhi, clip_center,
-                                clip_half, track_bad): Path(p).stem for p in paths}
+                                clip_half, track_bad, chir_spec): Path(p).stem
+                    for p in paths}
             for f in as_completed(futs):
                 merge(f.result(), futs[f])
                 tick()
 
     mean = torch.where(cnt > 0, s1 / cnt.clamp(min=1), torch.zeros_like(s1))
     var = (s2 / cnt.clamp(min=1) - mean ** 2).clamp(min=0)
-    return {"cnt": cnt, "mean": mean, "std": var.sqrt(), "min": mn, "max": mx,
-            "n_by_type": nbt, "errors": errors, "n_res": nres,
-            "n_files": len(paths), "n_obs": n_obs_tot, "n_rej": n_rej_tot,
-            "bad": bad}
+    out = {"cnt": cnt, "mean": mean, "std": var.sqrt(), "min": mn, "max": mx,
+           "n_by_type": nbt, "errors": errors, "n_res": nres,
+           "n_files": len(paths), "n_obs": n_obs_tot, "n_rej": n_rej_tot,
+           "bad": bad, "vol": None}
+    if vol_acc is not None:
+        vc, vs1, vs2, vmn, vmx = vol_acc
+        vmean = torch.where(vc > 0, vs1 / vc.clamp(min=1), torch.zeros_like(vs1))
+        vvar = (vs2 / vc.clamp(min=1) - vmean ** 2).clamp(min=0)
+        out["vol"] = {"cnt": vc, "mean": vmean, "std": vvar.sqrt(),
+                      "min": vmn, "max": vmx}
+    return out
 
 
 def _build_graph(bonded):
@@ -263,6 +311,31 @@ def _ideal_intra_group_distances():
                         d[tuple(sorted((n1, n2)))] = dist
         out[name] = d
     return out
+
+
+def _chirality_spec(info):
+    """Candidate stereocentres: atoms with >=3 heavy neighbours in the bond graph.
+
+    Neighbours are taken in ascending atom index so the sign of the signed volume
+    is deterministic. Planarity is NOT decided here: a base ring atom also has 3
+    neighbours but is sp2 and achiral, so the measured volume decides later.
+    """
+    name_to_idx = {v: k for k, v in _idx_to_name().items()}
+    rt_l, cent_l, n1_l, n2_l, n3_l = [], [], [], [], []
+    for name, d in info.items():
+        rt = name_to_idx.get(name)
+        if rt is None:
+            continue
+        adj = d["adj"]
+        for i in range(NATOM):
+            nb = sorted(adj[i])
+            if len(nb) >= 3:
+                rt_l.append(rt); cent_l.append(i)
+                n1_l.append(nb[0]); n2_l.append(nb[1]); n3_l.append(nb[2])
+    mk = lambda v: torch.tensor(v, dtype=torch.long)
+    return {"rt": mk(rt_l), "cent": mk(cent_l),
+            "n1": mk(n1_l), "n2": mk(n2_l), "n3": mk(n3_l),
+            "n": len(rt_l)}
 
 
 def build_tables(stats, rlo, rhi, tol_floor, tol_k, min_count,
@@ -528,6 +601,15 @@ def main():
     ap.add_argument("--bad-csv", default=None,
                     help="write residues with any rejected observation, so they "
                          "can be filtered from training and not just this table")
+    ap.add_argument("--chirality", action="store_true",
+                    help="run one extra pass measuring signed volumes at candidate "
+                         "stereocentres, to separate planar sp2 from pyramidal sp3 "
+                         "and record reference signs")
+    ap.add_argument("--chir-planar-tol", type=float, default=0.5,
+                    help="|mean signed volume| below this (A^3) is treated as planar "
+                         "sp2 and excluded; tetrahedral sp3 centres are ~2.5 A^3")
+    ap.add_argument("--chir-tol-floor", type=float, default=0.2,
+                    help="minimum signed-volume tolerance in A^3")
     ap.add_argument("--out", default="geometry_restraints.npz")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--quiet", action="store_true")
@@ -578,10 +660,53 @@ def main():
     report(info, stats, rlo, rhi, args.tol_floor, args.tol_k, args.min_count,
            _ideal_intra_group_distances(), args.min_frac, args.include_unknown)
 
+    # Chirality: distances cannot fix handedness, so measure the signed volume at
+    # every candidate centre. Planar sp2 base atoms also have 3 neighbours, and
+    # the measurement itself separates them from pyramidal sp3 sugar centres.
+    chir = {}
+    if args.chirality:
+        spec = _chirality_spec(info)
+        if spec["n"] == 0:
+            print("\nNo candidate stereocentres (no atom has >=3 bonds).")
+        else:
+            if not args.quiet:
+                print(f"\nchirality pass: {spec['n']} candidate centres")
+            vs = _collect(paths, args.workers, rlo, rhi, args.quiet,
+                          chir_spec=spec)["vol"]
+            names = _idx_to_name()
+            hdr = (f"{'restype':<8s} {'centre':>7s} {'mean V':>9s} {'std V':>8s} "
+                   f"{'min V':>9s} {'max V':>9s}  verdict")
+            print("\n" + hdr); print("-" * len(hdr))
+            kr, kc, k1, k2, k3, kt, ktol = [], [], [], [], [], [], []
+            for t in range(spec["n"]):
+                rt = int(spec["rt"][t]); ci = int(spec["cent"][t])
+                mv = float(vs["mean"][t]); sv = float(vs["std"][t])
+                mnv = float(vs["min"][t]); mxv = float(vs["max"][t])
+                planar = abs(mv) < args.chir_planar_tol
+                print(f"{names.get(rt, '?'):<8s} {rc.atom_types[ci]:>7s} "
+                      f"{mv:>9.4f} {sv:>8.4f} {mnv:>9.4f} {mxv:>9.4f}  "
+                      f"{'planar sp2, achiral' if planar else 'pyramidal sp3, CHIRAL'}")
+                if not planar and float(vs["cnt"][t]) > 0:
+                    kr.append(rt); kc.append(ci)
+                    k1.append(int(spec["n1"][t])); k2.append(int(spec["n2"][t]))
+                    k3.append(int(spec["n3"][t])); kt.append(mv)
+                    ktol.append(max(args.chir_tol_floor, args.tol_k * sv))
+            chir = {
+                "chir_rt": np.asarray(kr, dtype=np.int64),
+                "chir_cent": np.asarray(kc, dtype=np.int64),
+                "chir_n1": np.asarray(k1, dtype=np.int64),
+                "chir_n2": np.asarray(k2, dtype=np.int64),
+                "chir_n3": np.asarray(k3, dtype=np.int64),
+                "chir_target": np.asarray(kt, dtype=np.float32),
+                "chir_tol": np.asarray(ktol, dtype=np.float32),
+            }
+            print(f"\n  chiral centres kept: {len(kr)} / {spec['n']} "
+                  f"(planar threshold {args.chir_planar_tol} A^3)")
+
     np.savez_compressed(args.out, target=target, mask=mask, tol=tol,
                         graph_dist=gdist, rlo=rlo, rhi=rhi,
                         bond_cutoff=BOND_CUTOFF, tol_floor=args.tol_floor,
-                        tol_k=args.tol_k, min_frac=args.min_frac)
+                        tol_k=args.tol_k, min_frac=args.min_frac, **chir)
     print(f"\nRestraint tables written to {args.out}")
     print(f"  constrained pairs total: {int(mask.sum() // 2):,}")
     if args.csv:

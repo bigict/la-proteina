@@ -334,6 +334,7 @@ class AutoEncoder(L.LightningModule):
                     residue_mask=output_dec["residue_mask"],
                     table=table.to(coors_pred.device),
                     weight=geom_cfg.get("weight", 0.0),
+                    chir_weight=geom_cfg.get("chir_weight", 0.0),
                     na_only=geom_cfg.get("na_only", True),
                 )
             )
