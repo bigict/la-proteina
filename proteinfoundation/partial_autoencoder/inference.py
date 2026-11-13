@@ -11,14 +11,13 @@ from typing import Dict, Tuple
 import hydra
 import lightning as L
 # import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 import torch
 from dotenv import load_dotenv
 from loguru import logger
 from sklearn.decomposition import PCA
 
-from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
+from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder, NA_BOND_GEOMETRIES
 from proteinfoundation.utils.coors_utils import nm_to_ang
 from proteinfoundation.utils.pdb_utils import create_chain_index, write_prot_to_pdb
 
@@ -221,6 +220,44 @@ def compute_kl_latent(predictions, model):
     return vals
 
 
+@torch.no_grad()
+def compute_na_bond_geometry(predictions, model):
+    logger.info("Computing nucleic acid bond geometry")
+    metrics = {
+        f"{name}_{stat}": []
+        for name, _ in NA_BOND_GEOMETRIES
+        for stat in ("pred_mean", "truth_mean", "mae")
+    }
+    for x_in, x_out in predictions:
+        for name, (pred, truth, valid) in model.compute_na_bond_geometry_values(
+            x_out, x_in
+        ).items():
+            count = valid.sum(dim=-1)
+            for stat, values in (
+                ("pred_mean", pred),
+                ("truth_mean", truth),
+                ("mae", torch.abs(pred - truth)),
+            ):
+                mean = torch.where(valid, values, 0.0).sum(dim=-1) / count.clamp_min(1)
+                mean = mean.masked_fill(count == 0, float("nan"))
+                metrics[f"{name}_{stat}"].extend(mean.tolist())
+    return metrics
+
+
+@torch.no_grad()
+def compute_local_lddt(predictions, model):
+    logger.info("Computing local SmoothLDDT score")
+    lddt_cfg = model.cfg_ae.loss.get("lddt") or {}
+    window_size = lddt_cfg.get("window_size", 1)
+    vals = []
+    for x_in, x_out in predictions:
+        error = model.compute_struct_lddt_loss(
+            output_dec=x_out, batch=x_in, window_size=window_size
+        )["struct_lddt_justlog"]
+        vals.extend((1.0 - error).tolist())
+    return vals
+
+
 def compute_metric(metric, predictions, model):
     if metric == "all_atom_rmsd":
         return compute_all_atom_rmsd(predictions, model)  # List of floats
@@ -314,9 +351,14 @@ def main() -> None:
     metrics = {}
     metrics_to_compute = [k for k in cfg.metrics if cfg.metrics[k]]
     for metric in metrics_to_compute:
-        metrics[metric] = compute_metric(
-            metric=metric, predictions=predictions, model=model
-        )
+        if metric == "na_bond_geometry":
+            metrics.update(compute_na_bond_geometry(predictions, model))
+        elif metric == "local_lddt":
+            metrics["local_smooth_lddt_score"] = compute_local_lddt(predictions, model)
+        else:
+            metrics[metric] = compute_metric(
+                metric=metric, predictions=predictions, model=model
+            )
 
     # Extract PDB ids
     pdb_id = extract_pdb_ids(predictions)  # List of strs
@@ -342,8 +384,10 @@ def main() -> None:
     values = [ae_name, ckpt_name, cfg.dataset]
     for m in metrics:
         col_names += [f"{m}_mean", f"{m}_std", f"{m}_max", f"{m}_min"]
-        vals_aux = np.array(metrics[m])
-        values += [vals_aux.mean(), vals_aux.std(), vals_aux.max(), vals_aux.min()]
+        vals_aux = df[m]
+        values += [
+            vals_aux.mean(), vals_aux.std(ddof=0), vals_aux.max(), vals_aux.min()
+        ]
     col_names += [k for k in dir_storages]
     values += [dir_storages[k] for k in dir_storages]
     df_summary = pd.DataFrame(
