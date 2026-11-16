@@ -55,6 +55,12 @@ _METRIC_GETTERS = (
 _PERCENT_METRICS = frozenset(
     ("ramachandran_favored", "ramachandran_outliers", "rotamer_outliers")
 )
+# Undefined without protein. The API returns 0.0 rather than None for a
+# nucleic-acid-only model, which would otherwise read as a genuine score of
+# zero and drag the dataset mean down.
+_PROTEIN_ONLY_METRICS = frozenset(
+    ("ramachandran_favored", "ramachandran_outliers", "rotamer_outliers")
+)
 _METRICS = tuple(name for name, _ in _METRIC_GETTERS)
 _ROUNDING = {
     "clashscore": 2,
@@ -87,6 +93,22 @@ def _extract_metrics(mp_engine):
             value = value * 100
         values[name] = value
     return values, errors
+
+
+def _composition(model):
+    """Count protein and nucleic-acid residues, or (None, None) if unavailable.
+
+    Used only to decide whether the protein-only metrics apply. Any failure
+    falls back to reporting the raw API values, so a residue-classification
+    problem cannot break the geometry measurement this script exists for.
+    """
+    try:
+        groups = model.get_hierarchy().residue_groups()
+        n_prot = sum(1 for rg in groups if rg.is_protein())
+        n_na = sum(1 for rg in groups if rg.is_nucleic_acid())
+        return n_prot, n_na
+    except Exception:
+        return None, None
 
 
 def _resolve_pattern(pattern):
@@ -122,6 +144,13 @@ def process_pdb_directory(dir_path, output_csv):
             continue
 
         values, errors = _extract_metrics(mp_engine)
+        n_prot, n_na = _composition(processed_model)
+        record["n_protein_residues"] = n_prot
+        record["n_na_residues"] = n_na
+        # Report N/A rather than a misleading 0.0 when there is no protein.
+        if n_prot == 0:
+            for name in _PROTEIN_ONLY_METRICS:
+                values[name] = None
         record.update(values)
         # Geometry is the point of the run: flag its loss explicitly.
         geometry_missing = [m for m in ("bond_rmsd", "angle_rmsd") if values[m] is None]
