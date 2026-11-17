@@ -186,6 +186,8 @@ def split_dataframe(
         leftover_split (int): Index of split to assign leftover rows to.
             Defaults to 0.
         seed (int): Random seed for shuffling. Defaults to 42.
+        overwrite (bool): When False and df already carries a "split" column,
+            reuse that assignment instead of re-splitting. Defaults to True.
 
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping split names to
@@ -193,12 +195,30 @@ def split_dataframe(
 
     Raises:
         AssertionError: If len(splits) != len(ratios) or sum(ratios) != 1.
+        ValueError: If a reused "split" column holds unrecognized values or
+            leaves any requested split empty.
     """
     assert len(splits) == len(ratios), "Number of splits must equal number of ratios"
     assert sum(ratios) == 1, "Split ratios must sum to 1"
 
+    # Reuse an externally assigned split instead of re-splitting. The result must
+    # stay a dict keyed by split name: callers index it by name and iterate
+    # .items(), so returning the frame itself would turn those into column
+    # lookups. Rows keep their given order and are not shuffled.
     if not overwrite and "split" in df.columns:
-        return df
+        present = set(df["split"].unique())
+        unknown = sorted(present - set(splits))
+        if unknown:
+            raise ValueError(
+                f"pre-assigned 'split' column holds values outside {splits}: {unknown}"
+            )
+        missing = [s for s in splits if s not in present]
+        if missing:
+            raise ValueError(
+                f"pre-assigned 'split' column has no rows for {missing}; refusing to "
+                "continue with an empty split"
+            )
+        return {s: df[df["split"] == s] for s in splits}
 
     # Calculate size of each split
     split_sizes = [int(len(df) * ratio) for ratio in ratios]
