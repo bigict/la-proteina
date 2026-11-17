@@ -221,9 +221,9 @@ def extract_seq_from_pdb(fname: str) -> str:
 
 
 def rmsd_metric(
-    coors_1_atom37: Float[Tensor, "n 37 3"],
-    coors_2_atom37: Float[Tensor, "n 37 3"],
-    mask_atom_37: Optional[Bool[Tensor, "n 37"]] = None,
+    coors_1_atom37: Float[Tensor, f"n {residue_constants.atom_type_num} 3"],
+    coors_2_atom37: Float[Tensor, f"n {residue_constants.atom_type_num} 3"],
+    mask_atom_37: Optional[Bool[Tensor, f"n {residue_constants.atom_type_num}"]] = None,
     mode: Literal["ca", "bb3o", "all_atom"] = "ca",
     align: bool = True,
     residue_indices: Optional[List[int]] = None,
@@ -251,7 +251,7 @@ def rmsd_metric(
     """
     assert coors_1_atom37.shape == coors_2_atom37.shape
     assert coors_1_atom37.shape[-1] == 3
-    assert coors_1_atom37.shape[-2] == 37
+    assert coors_1_atom37.shape[-2] == residue_constants.atom_type_num
     assert coors_1_atom37.ndim == 3
     n = coors_1_atom37.shape[0]
 
@@ -262,7 +262,7 @@ def rmsd_metric(
             mode != "all_atom"
         ), "`all_atom` mode not accepted for `rmsd_metric` when mask is not provided"
         mask_atom_37 = torch.zeros(
-            (n, 37), device=coors_1_atom37.device, dtype=torch.bool
+            (n, residue_constants.atom_type_num), device=coors_1_atom37.device, dtype=torch.bool
         )
         mask_atom_37[:, :3] = True  # [N CA C]
         mask_atom_37[:, 4] = True  # [O]
@@ -273,7 +273,7 @@ def rmsd_metric(
     elif mode == "bb3o":
         mask_f = get_atom37_bb3o_mask(n=n, device=coors_1_atom37.device)
     elif mode == "all_atom":
-        mask_f = torch.ones((n, 37), device=coors_1_atom37.device, dtype=torch.bool)
+        mask_f = torch.ones((n, residue_constants.atom_type_num), device=coors_1_atom37.device, dtype=torch.bool)
     else:
         raise IOError(f"Mode {mode} for RMSD not valid")
     mask_atom_37 = mask_atom_37 * mask_f  # Keeps only requested atoms
@@ -460,6 +460,13 @@ def scRMSD(
                 rec_prot_folding = load_pdb(out_folding)
                 rec_coors = torch.Tensor(rec_prot_folding.atom_positions)
                 rec_mask = torch.Tensor(rec_prot_folding.atom_mask).bool()
+                if gen_mask.shape != rec_mask.shape:
+                    # Handle failed predictions
+                    results[mode][model].append(float("inf"))
+                    if motif_residue_indices is not None:
+                        results[f"{mode}_motif"][model].append(float("inf"))
+                    logger.warning(f"Incorrect predict {mode}@{out_folding}")
+                    continue
                 mask = gen_mask * rec_mask
 
                 # Compute normal RMSD (all residues)

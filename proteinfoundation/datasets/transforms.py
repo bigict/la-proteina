@@ -8,6 +8,7 @@ from torch_geometric.data import Data
 from openfold.data import data_transforms
 from openfold.np import residue_constants
 from openfold.utils import rigid_utils
+from openfold.utils.feats import atom_gather, pseudo_residue_type
 from proteinfoundation.utils.align_utils import mean_w_mask
 from proteinfoundation.utils.constants import SIDECHAIN_TIP_ATOMS
 from proteinfoundation.utils.coors_utils import ang_to_nm, sample_uniform_rotation
@@ -30,7 +31,18 @@ class ChainBreakCountingTransform(T.BaseTransform):
         self.chain_break_cutoff = chain_break_cutoff
 
     def __call__(self, graph: Data) -> Data:
-        ca_coords = graph.coords[:, 1, :]
+        aatype = graph.residue_type
+        is_na = torch.logical_or(
+            (aatype >= residue_constants.dna_from_idx) & (aatype <= residue_constants.dna_to_idx),
+            (aatype >= residue_constants.rna_from_idx) & (aatype <= residue_constants.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na,
+            residue_constants.atom_order["CA"],
+            residue_constants.atom_order.get("P", residue_constants.atom_order["CA"])
+        )
+        # ca_coords = graph.coords[:, 1, :]
+        ca_coords = atom_gather(graph.coords, ca_idx, -2)
         ca_dists = torch.norm(ca_coords[1:] - ca_coords[:-1], dim=1)
         graph.chain_breaks = (ca_dists > self.chain_break_cutoff).sum().item()
         return graph
@@ -46,9 +58,23 @@ class ChainBreakPerResidueTransform(T.BaseTransform):
         self.chain_break_cutoff = chain_break_cutoff
 
     def __call__(self, graph: Data) -> Data:
-        ca_coords = graph.coords[:, 1, :]
+        aatype = graph.residue_type
+        is_na = torch.logical_or(
+            (aatype >= residue_constants.dna_from_idx) & (aatype <= residue_constants.dna_to_idx),
+            (aatype >= residue_constants.rna_from_idx) & (aatype <= residue_constants.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na,
+            residue_constants.atom_order["CA"],
+            residue_constants.atom_order.get("P", residue_constants.atom_order["CA"])
+        )
+        # ca_coords = graph.coords[:, 1, :]
+        ca_coords = atom_gather(graph.coords, ca_idx, -2)
         ca_dists = torch.norm(ca_coords[1:] - ca_coords[:-1], dim=1)
         chain_breaks_per_residue = ca_dists > self.chain_break_cutoff
+        chain_breaks_per_residue = chain_breaks_per_residue & torch.logical_not(
+            is_na[1:] & is_na[:-1]
+        )
         graph.chain_breaks_per_residue = torch.cat(
             (
                 chain_breaks_per_residue,
@@ -196,7 +222,18 @@ class CenterStructureTransform(T.BaseTransform):
     """Centers the structure based on CA coordinates."""
 
     def __call__(self, graph: Data) -> Data:
-        ca_coords = graph.coords_nm[:, 1, :]  # [n, 3]
+        aatype = graph.residue_type
+        is_na = torch.logical_or(
+            (aatype >= residue_constants.dna_from_idx) & (aatype <= residue_constants.dna_to_idx),
+            (aatype >= residue_constants.rna_from_idx) & (aatype <= residue_constants.rna_to_idx)
+        )
+        ca_idx = torch.where(
+            ~is_na,
+            residue_constants.atom_order["CA"],
+            residue_constants.atom_order.get("P", residue_constants.atom_order["CA"])
+        )
+        # ca_coords = graph.coords_nm[:, 1, :]  # [n, 3]
+        ca_coords = atom_gather(graph.coords_nm, ca_idx, -2)
         mask = torch.ones(ca_coords.shape[0], dtype=torch.bool, device=ca_coords.device)
         com = mean_w_mask(ca_coords, mask, keepdim=True)  # [1, 3]
         graph.coords_nm = graph.coords_nm - com[None, ...]  # [n, 37, 3] - [1, 3]
@@ -348,7 +385,18 @@ class CenteringTransform(T.BaseTransform):
 
         # set the correct data mode for centering
         if self.data_mode == "bb_ca":
-            coords = graph.coords_nm[:, 1, :]
+            aatype = graph.residue_type
+            is_na = torch.logical_or(
+                (aatype >= residue_constants.dna_from_idx) & (aatype <= residue_constants.dna_to_idx),
+                (aatype >= residue_constants.rna_from_idx) & (aatype <= residue_constants.rna_to_idx)
+            )
+            ca_idx = torch.where(
+                ~is_na,
+                residue_constants.atom_order["CA"],
+                residue_constants.atom_order.get("P", residue_constants.atom_order["CA"])
+            )
+            # coords = graph.coords_nm[:, 1, :]
+            coords = atom_gather(graph.coords_nm, ca_idx, -2)
         elif self.data_mode == "all-atom":
             coords = graph.coords_nm.flatten(0, 1)
         else:
@@ -439,6 +487,7 @@ class MotifMaskTransform(T.BaseTransform):
         motif_max_n_seg: int = 4,
         motif_min_n_res: int = 1,
         motif_max_n_res: int = 8,
+        motif_seq_with_x: bool = False,
     ):
         self.atom_selection_mode = atom_selection_mode
         self.residue_selection_mode = residue_selection_mode
@@ -449,6 +498,7 @@ class MotifMaskTransform(T.BaseTransform):
         self.motif_max_n_seg = motif_max_n_seg
         self.motif_min_n_res = motif_min_n_res
         self.motif_max_n_res = motif_max_n_res
+        self.motif_seq_with_x = motif_seq_with_x
 
         # Define backbone atom indices based on atom_types from residue_constants
         self.backbone_atoms = [
@@ -640,6 +690,9 @@ class MotifMaskTransform(T.BaseTransform):
         graph.x_motif = graph.coords_nm * graph.motif_mask[..., None]  # [n, 37, 3]
         graph.seq_motif_mask = motif_mask.sum(dim=-1).bool()  # [n]
         graph.seq_motif = graph.residue_type * graph.seq_motif_mask  # [n]
+        if self.motif_seq_with_x:  # fill each pos_n with pseudo residue type: X
+            x = pseudo_residue_type(graph.residue_type)
+            graph.seq_motif = torch.where(graph.seq_motif_mask, graph.residue_type, x)
         return graph
 
 

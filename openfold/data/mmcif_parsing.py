@@ -83,8 +83,9 @@ class MmcifObject:
         files being processed.
       header: Biopython header.
       structure: Biopython structure.
-      chain_to_seqres: Dict mapping chain_id to 1 letter amino acid sequence. E.g.
+      chain_to_seqres: Dict mapping chain_id to 1 letter polymer sequence. E.g.
         {'A': 'ABCDEFG'}
+      chain_to_moltype: Dict mapping chain_id to residue_constants moltype.
       seqres_to_structure: Dict; for each chain_id contains a mapping between
         SEQRES index and a ResidueAtPosition. e.g. {'A': {0: ResidueAtPosition,
                                                           1: ResidueAtPosition,
@@ -96,6 +97,7 @@ class MmcifObject:
     header: PdbHeader
     structure: PdbStructure
     chain_to_seqres: Mapping[ChainId, SeqRes]
+    chain_to_moltype: Mapping[ChainId, int]
     seqres_to_structure: Mapping[ChainId, Mapping[int, ResidueAtPosition]]
     raw_string: Any
 
@@ -206,12 +208,16 @@ def parse(
 
         header = _get_header(parsed_info)
 
-        # Determine the protein chains, and their start numbers according to the
+        # Determine the supported polymer chains, and their start numbers according
+        # to the
         # internal mmCIF numbering scheme (likely but not guaranteed to be 1).
-        valid_chains = _get_protein_chains(parsed_info=parsed_info)
+        valid_chains, chain_to_moltype = _get_supported_polymer_chains(
+            parsed_info=parsed_info
+        )
         if not valid_chains:
             return ParsingResult(
-                None, {(file_id, ""): "No protein chains found in this file."}
+                None,
+                {(file_id, ""): "No supported polymer chains found in this file."},
             )
         seq_start_num = {
             chain_id: min([monomer.num for monomer in seq])
@@ -265,8 +271,8 @@ def parse(
 
         # Add missing residue information to seq_to_structure_mappings.
         for chain_id, seq_info in valid_chains.items():
-            author_chain = mmcif_to_author_chain_id[chain_id]
-            current_mapping = seq_to_structure_mappings[author_chain]
+            author_chain = mmcif_to_author_chain_id.get(chain_id, chain_id)
+            current_mapping = seq_to_structure_mappings.get(author_chain, {})
             for idx, monomer in enumerate(seq_info):
                 if idx not in current_mapping:
                     current_mapping[idx] = ResidueAtPosition(
@@ -275,22 +281,26 @@ def parse(
                         is_missing=True,
                         hetflag=" ",
                     )
+            seq_to_structure_mappings[author_chain] = current_mapping
 
         author_chain_to_sequence = {}
+        author_chain_to_moltype = {}
         for chain_id, seq_info in valid_chains.items():
-            author_chain = mmcif_to_author_chain_id[chain_id]
+            author_chain = mmcif_to_author_chain_id.get(chain_id, chain_id)
+            chain_moltype = chain_to_moltype[chain_id]
             seq = []
             for monomer in seq_info:
-                code = SCOPData.protein_letters_3to1.get(monomer.id, "X")
-                seq.append(code if len(code) == 1 else "X")
+                seq.append(_monomer_id_to_one_letter(monomer.id, chain_moltype))
             seq = "".join(seq)
             author_chain_to_sequence[author_chain] = seq
+            author_chain_to_moltype[author_chain] = chain_moltype
 
         mmcif_object = MmcifObject(
             file_id=file_id,
             header=header,
             structure=first_model_structure,
             chain_to_seqres=author_chain_to_sequence,
+            chain_to_moltype=author_chain_to_moltype,
             seqres_to_structure=seq_to_structure_mappings,
             raw_string=parsed_info,
         )
@@ -370,16 +380,31 @@ def _get_atom_site_list(parsed_info: MmCIFDict) -> Sequence[AtomSite]:
     ]
 
 
-def _get_protein_chains(
+def _polymer_type_to_moltype(
+    poly_type: str
+) -> Optional[int]:
+    poly_type = (poly_type or "").lower()
+    if "peptide" in poly_type:
+        return residue_constants.PROT
+    if "deoxyribonucleotide" in poly_type:
+        return residue_constants.DNA
+    if "ribonucleotide" in poly_type:
+        return residue_constants.RNA
+    return None
+
+
+def _get_supported_polymer_chains(
     *, parsed_info: Mapping[str, Any]
-) -> Mapping[ChainId, Sequence[Monomer]]:
-    """Extracts polymer information for protein chains only.
+) -> Tuple[Mapping[ChainId, Sequence[Monomer]], Mapping[ChainId, int]]:
+    """Extracts polymer information for protein and nucleic-acid chains.
 
     Args:
       parsed_info: _mmcif_dict produced by the Biopython parser.
 
     Returns:
-      A dict mapping mmcif chain id to a list of Monomers.
+      A tuple of:
+        * dict mapping mmcif chain id to a list of Monomers.
+        * dict mapping mmcif chain id to residue_constants moltype.
     """
     # Get polymer information for each entity in the structure.
     entity_poly_seqs = mmcif_loop_to_list("_entity_poly_seq.", parsed_info)
@@ -393,9 +418,9 @@ def _get_protein_chains(
             )
         )
 
-    # Get chemical compositions. Will allow us to identify which of these polymers
-    # are proteins.
-    chem_comps = mmcif_loop_to_dict("_chem_comp.", "_chem_comp.id", parsed_info)
+    entity_polys = mmcif_loop_to_dict(
+        "_entity_poly.", "_entity_poly.entity_id", parsed_info
+    )
 
     # Get chains information for each entity. Necessary so that we can return a
     # dict keyed on chain id rather than entity.
@@ -407,21 +432,35 @@ def _get_protein_chains(
         entity_id = struct_asym["_struct_asym.entity_id"]
         entity_to_mmcif_chains[entity_id].append(chain_id)
 
-    # Identify and return the valid protein chains.
+    # Identify and return the valid supported polymer chains.
     valid_chains = {}
+    chain_to_moltype = {}
     for entity_id, seq_info in polymers.items():
         chain_ids = entity_to_mmcif_chains[entity_id]
+        poly_info = entity_polys.get(entity_id, {})
+        chain_moltype = _polymer_type_to_moltype(poly_info.get("_entity_poly.type", ""))
 
-        # Reject polymers without any peptide-like components, such as DNA/RNA.
-        if any(
-            [
-                "peptide" in chem_comps[monomer.id]["_chem_comp.type"]
-                for monomer in seq_info
-            ]
-        ):
-            for chain_id in chain_ids:
-                valid_chains[chain_id] = seq_info
-    return valid_chains
+        if chain_moltype is None:
+            continue
+
+        for chain_id in chain_ids:
+            valid_chains[chain_id] = seq_info
+            chain_to_moltype[chain_id] = chain_moltype
+
+    return valid_chains, chain_to_moltype
+
+
+def _monomer_id_to_one_letter(monomer_id: str, moltype: int) -> str:
+    monomer_id = monomer_id.upper()
+    code_info = residue_constants.restype_3to1.get(monomer_id)
+    if code_info is None:
+        return "X"
+
+    code, code_moltype = code_info
+    if code_moltype != moltype:
+        return "X"
+
+    return code
 
 
 def _is_set(data: str) -> bool:
