@@ -1,19 +1,19 @@
-# input: DATA_PATH 环境变量、training_ae 配置、PDB 数据目录
-# output: 运行 prepare_data 并在 processed/ 生成 .pt
-# pos: tests/pdb_data，小规模预处理脚本(验证 pipeline 可跑通)
+# input: DATA_PATH environment variable, training_ae config, PDB data directory
+# output: runs prepare_data and writes .pt files under processed/
+# pos: tests/pdb_data, a small-scale preprocessing script (checks the pipeline runs)
 # If you update this file, update this header AND the folder README.
 """
-最小化预处理脚本，便于快速验证修改后能否产出 .pt 文件。
+Minimal preprocessing script, for a quick check that a change still produces .pt files.
 
-用法：
-  export DATA_PATH=/home/xxx/DATA        # 必须指向包含 protna_step2b/raw 的目录
+Usage:
+  export DATA_PATH=/home/xxx/DATA        # must point at the directory holding protna_step2b/raw
   python script_utils/dataset_preprocess.py
 
-脚本会：
-  - 使用训练配置 training_ae + step2b 数据集
-  - 将 NA 子集 fraction 设为 0.001，开启 overwrite & 重新聚类
-  - 关闭 wandb/ckpt
-  - 调用 datamodule.prepare_data()
+The script:
+  - uses the training_ae config with the step2b dataset
+  - sets the NA subset fraction to 0.001, enables overwrite and re-clustering
+  - disables wandb/ckpt
+  - calls datamodule.prepare_data()
 """
 
 import os
@@ -33,7 +33,7 @@ from proteinfoundation.partial_autoencoder.train import load_data_module
 def main(cfg):
     data_path = os.environ.get("DATA_PATH")
     if not data_path:
-        raise SystemExit("请先 export DATA_PATH 指向数据根目录，例如 /home/xxx/DATA")
+        raise SystemExit("export DATA_PATH to the data root first, e.g. /home/xxx/DATA")
 
     # config_dir = str(Path(__file__).resolve().parents[2] / "proteinfoundation" / "configs")
     # with initialize_config_dir(version_base=None, config_dir=config_dir):
@@ -52,7 +52,7 @@ def main(cfg):
     cfg_data, dm = load_data_module(cfg, is_cluster_run=False)
     dm.prepare_data()
     dm.setup()
-    print("done. 检查 processed 目录是否生成 .pt")
+    print("done. check the processed directory for the generated .pt files")
 
 
 if __name__ == "__main__":
