@@ -334,6 +334,7 @@ class PDBDataSplitter:
         split_type: Literal["random", "sequence_similarity"] = "random",
         split_sequence_similarity: Optional[int] = None,
         overwrite_sequence_clusters: Optional[bool] = False,
+        overwrite_split_dataframe: Optional[bool] = True,
     ) -> None:
         """Initialise DataSplitter object for splitting data based on arguments into train, val and test set.
 
@@ -359,6 +360,7 @@ class PDBDataSplitter:
         self.split_sequence_similarity = split_sequence_similarity
         self.overwrite_sequence_clusters = overwrite_sequence_clusters
         self.splits = ["train", "val", "test"]
+        self.overwrite_split_dataframe = overwrite_split_dataframe
         self.dfs_splits = None
         self.clusterid_to_seqid_mappings = None
 
@@ -376,7 +378,9 @@ class PDBDataSplitter:
             logger.info(
                 f"Splitting dataset via random split into {self.train_val_test}..."
             )
-            self.dfs_splits = split_dataframe(df_data, self.splits, self.train_val_test)
+            self.dfs_splits = split_dataframe(
+                df_data, self.splits, self.train_val_test, overwrite=self.overwrite_split_dataframe
+            )
             self.clusterid_to_seqid_mappings = None
 
         elif self.split_type == "sequence_similarity":
@@ -412,7 +416,7 @@ class PDBDataSplitter:
             # only select sequence representatives from original df to generate random splits of clusters
             df_sequences_reps = df_data.loc[df_data.id.isin(seq_ids)]
             splits = split_dataframe(
-                df_sequences_reps, self.splits, self.train_val_test
+                df_sequences_reps, self.splits, self.train_val_test, overwrite=self.overwrite_split_dataframe
             )
             # construct cluster_dict to map from cluster representative to all sequence ids in cluster
             clusterid_to_seqid_mapping = read_cluster_tsv(cluster_tsv_filepath)

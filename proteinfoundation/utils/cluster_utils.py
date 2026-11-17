@@ -174,6 +174,7 @@ def split_dataframe(
     ratios: List[float],
     leftover_split: int = 0,
     seed: int = 42,
+    overwrite: bool = True,
 ) -> Dict[str, pd.DataFrame]:
     """
     Split a DataFrame into multiple parts based on specified split ratios.
@@ -185,6 +186,8 @@ def split_dataframe(
         leftover_split (int): Index of split to assign leftover rows to.
             Defaults to 0.
         seed (int): Random seed for shuffling. Defaults to 42.
+        overwrite (bool): When False and df already carries a "split" column,
+            reuse that assignment instead of re-splitting. Defaults to True.
 
     Returns:
         Dict[str, pd.DataFrame]: Dictionary mapping split names to
@@ -192,9 +195,30 @@ def split_dataframe(
 
     Raises:
         AssertionError: If len(splits) != len(ratios) or sum(ratios) != 1.
+        ValueError: If a reused "split" column holds unrecognized values or
+            leaves any requested split empty.
     """
     assert len(splits) == len(ratios), "Number of splits must equal number of ratios"
     assert sum(ratios) == 1, "Split ratios must sum to 1"
+
+    # Reuse an externally assigned split instead of re-splitting. The result must
+    # stay a dict keyed by split name: callers index it by name and iterate
+    # .items(), so returning the frame itself would turn those into column
+    # lookups. Rows keep their given order and are not shuffled.
+    if not overwrite and "split" in df.columns:
+        present = set(df["split"].unique())
+        unknown = sorted(present - set(splits))
+        if unknown:
+            raise ValueError(
+                f"pre-assigned 'split' column holds values outside {splits}: {unknown}"
+            )
+        missing = [s for s in splits if s not in present]
+        if missing:
+            raise ValueError(
+                f"pre-assigned 'split' column has no rows for {missing}; refusing to "
+                "continue with an empty split"
+            )
+        return {s: df[df["split"] == s] for s in splits}
 
     # Calculate size of each split
     split_sizes = [int(len(df) * ratio) for ratio in ratios]
@@ -311,7 +335,7 @@ def cluster_sequences(
 
 
 def split_sequence_clusters(
-    df, splits, ratios, leftover_split=0, seed=42
+    df, splits, ratios, leftover_split=0, seed=42, overwrite=True
 ) -> Dict[str, pd.DataFrame]:
     """
     Split clustered sequences into train/val/test sets.
@@ -328,7 +352,9 @@ def split_sequence_clusters(
         Dict[str, pd.DataFrame]: Dictionary mapping split names to DataFrames that contain randomly-split representative sequences.
     """
     # Split clusters into subsets
-    cluster_splits = split_dataframe(df, splits, ratios, leftover_split, seed)
+    cluster_splits = split_dataframe(
+        df, splits, ratios, leftover_split, seed, overwrite=overwrite
+    )
     # Get representative sequences for each split
     split_dfs = {}
     for split, cluster_df in cluster_splits.items():
