@@ -299,8 +299,15 @@ class AutoEncoder(L.LightningModule):
                 self.compute_struct_lddt_loss(
                     output_dec=output_dec,
                     batch=batch,
+                    window_size=self.cfg_ae.loss.lddt.get("window_size", 1),
                     weight=self.cfg_ae.loss.lddt.weight,
                 )
+            )
+
+        # Structure violation metric
+        if self.cfg_ae.loss.get("violation", True):
+            losses.update(
+                self.compute_struct_violation_loss(output_dec=output_dec, batch=batch)
             )
 
         # Sequence loss
@@ -376,16 +383,41 @@ class AutoEncoder(L.LightningModule):
         self,
         output_dec: Dict[str, torch.Tensor],
         batch: Dict[str, torch.Tensor],
+        window_size: int = 1,
         weight: float = 1.0,
     ) -> Dict[str, Float[Tensor, "b"]]:
+        assert window_size >= 1
+
+        def _unfold(t: torch.Tensor, dim: int = 1, pad_value: float = None):
+            dim = dim % t.dim()
+
+            # pad
+            pad = (0, window_size - 1)
+            if pad != (0, 0):
+                pad = (0, 0) * (t.dim() - dim - 1) + pad
+                t = torch.nn.functional.pad(t, pad=pad, value=pad_value)
+            # unfold
+            t = t.unfold(dim, size=window_size, step=1)
+            # permut
+            if dim + 1 < t.dim():
+                dims = (
+                    tuple(range(dim + 1)) + (-1, ) + tuple(range(dim + 1, t.dim() - 1))
+                )
+                t = torch.permute(t, dims)
+            return t
+
+        def _cdist(x: torch.Tensor, dim: int = 1):
+            dim = dim % x.dim()
+            return torch.cdist(x.unsqueeze(dim + 1), _unfold(x, dim=dim))
+
         coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
         coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
         mask = output_dec["residue_mask"]  # [b, n] boolean
         atom_mask_true = batch["coord_mask"] * mask[..., None]  # [b, n, 37] boolean
 
         err = torch.abs(
-            torch.cdist(coors_nm_true, coors_nm_true) - torch.cdist(coors_nm_pred, coors_nm_pred)
-        )  # [b, n, 37, 37]
+            _cdist(coors_nm_true, dim=-3) - _cdist(coors_nm_pred, dim=-3)
+        )  # [b, n, window_size, 37, 37]
 
         losses = {}
 
@@ -393,22 +425,152 @@ class AutoEncoder(L.LightningModule):
         err_ang = nm_to_ang(err)  # [b, n, 37, 37]
 
 
-        cdist_mask = mask[..., None, None] * (
-            atom_mask_true[..., :, None] * atom_mask_true[..., None, :]
-        ) * (1 - torch.eye(rc.atom_type_num, device=mask.device))  # [b, n, 37, 37]
+        # At offset 0, exclude diagonal pairs because each atom is paired with itself.
+        # At offsets > 0, keep diagonal pairs because they belong to different residues.
+        non_self_mask = mask.new_ones((window_size, rc.atom_type_num, rc.atom_type_num))
+        non_self_mask[0] = ~torch.eye(
+            rc.atom_type_num, dtype=torch.bool, device=mask.device
+        )
+
+        cdist_mask = mask[..., None, None, None] * (
+            atom_mask_true[..., None, :, None] * _unfold(
+                atom_mask_true[..., None, :], dim=-3
+            )
+        ) * non_self_mask  # [b, n, window_size, 37, 37]
         score = 0.25 * sum(
             cdist_mask * torch.sigmoid(t - err_ang) for t in (0.5, 1.0, 2.0, 4.0)
-        )  # [b, n, 37, 37]
+        )  # [b, n, window_size, 37, 37]
 
-        reduce_dim = (-3, -2, -1)
+        reduce_dim = (-4, -3, -2, -1)
         w = token_level_w(batch["residue_type"], self.cfg_ae.loss.get("lddt", {}))  # [b, n]
-        score = torch.sum(score * w[..., None, None], dim=reduce_dim) / (
-            torch.sum(cdist_mask * w[..., None, None], dim=reduce_dim) + 1e-9
+        cdist_mask = cdist_mask.expand_as(score)
+        score = torch.sum(score * w[..., None, None, None], dim=reduce_dim) / (
+            torch.sum(cdist_mask * w[..., None, None, None], dim=reduce_dim) + 1e-9
         )  # [b]
 
         err = 1. - score
         losses["struct_lddt"] = err * weight
-        losses["struct_lddt_justlog"] = err * weight
+        losses["struct_lddt_justlog"] = err
+        return losses
+
+    def compute_struct_violation_loss(
+        self,
+        output_dec: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+    ) -> Dict[str, Float[Tensor, "b"]]:
+        aatype = batch["residue_type"]  # [b, n]
+        coors_nm_pred = output_dec["coors_nm"]  # [b, n, 37, 3]
+        coors_nm_true = batch["coords_nm"]  # [b, n, 37, 3]
+
+        # violation
+        is_dna = (aatype >= rc.dna_from_idx) & (aatype <= rc.dna_to_idx)
+        is_rna = (aatype >= rc.rna_from_idx) & (aatype <= rc.rna_to_idx)
+
+        def _violation(
+            coors: torch.Tensor,
+            mask: torch.Tensor,
+            min_dist: float,
+            max_dist: float,
+            prefix: str = "",
+            suffix: str = "_justlog",
+            eps: float = 1e-6,
+        ) -> Dict[str, Float[Tensor, "b"]]:
+            err = coors[..., 1:, :] - coors[..., :-1, :]  # [b, n - 1, 3]
+            err = nm_to_ang(err)  # [b, n - 1, 3]
+
+            err = torch.linalg.norm(err, dim=-1)  # [b, n - 1]
+            val = (err >= min_dist) & (err <= max_dist)
+            msk = mask[..., 1:] * mask[..., :-1]  # [b, n - 1]
+            return {
+                f"{prefix}mean{suffix}":  (err * msk).sum(-1) / (msk.sum(-1) + eps),
+                f"{prefix}ratio{suffix}": (val * msk).sum(-1) / (msk.sum(-1) + eps),
+            }
+
+        def _violation_with_delta(
+            losses: Dict[str, Float[Tensor, "b"]],
+            atom_idx: int,
+            mask: torch.Tensor,
+            min_dist: float,
+            max_dist: float,
+            prefix: str = "",
+            suffix: str = "_justlog",
+        ) -> Dict[str, Float[Tensor, "b"]]:
+            losses.update(
+                _violation(
+                    coors_nm_pred[..., atom_idx, :],
+                    mask,
+                    min_dist=min_dist,
+                    max_dist=max_dist,
+                    prefix=f"{prefix}pred_",
+                    suffix=suffix,
+                )
+            )
+            losses.update(
+                _violation(
+                    coors_nm_true[..., atom_idx, :],
+                    mask,
+                    min_dist=min_dist,
+                    max_dist=max_dist,
+                    prefix=f"{prefix}truth_",
+                    suffix=suffix,
+                )
+            )
+            losses[f"{prefix}delta_mean{suffix}"] = (
+                losses[f"{prefix}truth_mean{suffix}"] - losses[f"{prefix}pred_mean{suffix}"]
+            )
+            losses[f"{prefix}delta_ratio{suffix}"] = (
+                losses[f"{prefix}truth_ratio{suffix}"] - losses[f"{prefix}pred_ratio{suffix}"]
+            )
+
+            return losses
+
+        losses = {}
+        # 1. C1' - C1' (5.7 - 6.1)   ~5.9 - 6.0 Å (B-DNA) ~5.8 - 5.9 Å (A-RNA)
+        if "C1\'" in rc.atom_order:
+            losses = _violation_with_delta(
+                losses,
+                rc.atom_order["C1\'"],
+                is_dna | is_rna,
+                min_dist=5.7,
+                max_dist=6.1,
+                prefix=f"NA_C1p_C1p_",
+            )
+        # 2. P - P  ~6.6 - 6.7 Å (B-DNA)  ~5.9 - 6.0 Å (A-RNA)
+        if "P" in rc.atom_order:
+            losses = _violation_with_delta(
+                losses,
+                rc.atom_order["P"],
+                is_dna,
+                min_dist=6.4,
+                max_dist=6.9,
+                prefix=f"DNA_P_P_",
+            )
+            losses = _violation_with_delta(
+                losses,
+                rc.atom_order["P"],
+                is_rna,
+                min_dist=5.7,
+                max_dist=6.2,
+                prefix=f"RNA_P_P_",
+            )
+        # 3. C4' - C4' B-DNA (~5.8/5.6 - 6.0 Å) A-RNA (~5.3/5.1 - 5.5 Å)
+        if "C4\'" in rc.atom_order:
+            losses = _violation_with_delta(
+                losses,
+                rc.atom_order["C4\'"],
+                is_dna,
+                min_dist=5.6,
+                max_dist=6.0,
+                prefix=f"DNA_C4p_C4p_",
+            )
+            losses = _violation_with_delta(
+                losses,
+                rc.atom_order["C4\'"],
+                is_rna,
+                min_dist=5.1,
+                max_dist=5.5,
+                prefix=f"RNA_C4p_C4p_",
+            )
         return losses
 
     def compute_struct_rec_loss(
@@ -446,6 +608,7 @@ class AutoEncoder(L.LightningModule):
             mask: Bool[torch.Tensor, "b n"],
             atom_mask: Bool[torch.Tensor, f"b n {rc.atom_type_num}"],
             mode: Literal["sum", "mean"] = "sum",
+            lty: Literal["l1", "l2"] = loss_ty,
         ) -> Float[torch.Tensor, "b"]:
             # nres = mask.sum(dim=-1)  # [b]
             err = torch.sum(err, dim=(-1, -2))  # [b, n]
@@ -454,7 +617,10 @@ class AutoEncoder(L.LightningModule):
                 nat = atom_mask.sum(dim=-1) * mask  # [b, n]
                 err = err / (nat + eps)  # Take mean over existing atoms if mode == "mean"
             # err = err.sum(dim=-1) / nres  # [b]
-            w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
+            if lty in self.cfg_ae.loss.struct:
+                w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct[lty])
+            else:
+                w = token_level_w(batch["residue_type"], self.cfg_ae.loss.struct)
             err = (err * w).sum(dim=-1) / ((mask * w).sum(dim=-1) + eps)  # [b]
             return err
 
@@ -477,9 +643,11 @@ class AutoEncoder(L.LightningModule):
         losses["rmsd_no_align_a37_ang_justlog"] = rmsd
 
         err_l1 = reduce_37(
-            torch.abs(err), mask, atom_mask_true, mode=reduce_mode
+            torch.abs(err), mask, atom_mask_true, mode=reduce_mode, lty="l1"
         )  # L1 loss
-        err_l2 = reduce_37(err**2, mask, atom_mask_true, mode=reduce_mode)  # L2 loss
+        err_l2 = reduce_37(
+            err**2, mask, atom_mask_true, mode=reduce_mode, lty="l2"
+        )  # L2 loss
 
         if loss_ty == "l1":
             losses["struct_l1"] = err_l1 * weight

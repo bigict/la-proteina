@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import sys
 
 root = os.path.abspath(".")
@@ -195,6 +196,20 @@ def compute_all_atom_rmsd(predictions, model):
     return vals
 
 
+def compute_struct_violation(predictions, model):
+    logger.info(f"Computing DNA/RNA structure violation")
+    vals = []
+    for x_in, x_out in predictions:
+        v = model.compute_struct_violation_loss(
+            output_dec=x_out,
+            batch=x_in,
+        )
+        vals += (
+            v["DNA_C4p_C4p_delta_mean_justlog"] + v["RNA_C4p_C4p_delta_mean_justlog"]
+        ).tolist()
+    return vals
+
+
 def compute_sec_rec_rate(predictions, model):
     logger.info(f"Computing sequence recovery rate")
     vals = []
@@ -228,6 +243,8 @@ def compute_metric(metric, predictions, model):
         return compute_sec_rec_rate(predictions, model)  # List of floats
     elif metric == "kl_latent_dist":
         return compute_kl_latent(predictions, model)  # List of floats
+    elif metric == "na_struct_violation":
+        return compute_struct_violation(predictions, model)
     else:
         raise IOError(f"Metric {metric} not implemented")
 
@@ -247,6 +264,8 @@ def get_df_stats(df):
 
 def save_predictions(root_path, predictions, pseudo_linker_length=0):
     logger.info(f"Saving PDBs we test on")
+
+    os.makedirs(root_path, exist_ok=True)
 
     for i, (x_in, x_out) in enumerate(predictions):
         for j in range(len(x_in["id"])):
@@ -290,10 +309,11 @@ def main() -> None:
     ae_name, ckpt_name = extract_ckpt_info(cfg.ckpt_file)
 
     # Some setup
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     root_path = setup(cfg, create_root=True, config_name=config_name)
-    df_file_store = os.path.join(root_path, f"../results_{config_name}.csv")
+    df_file_store = os.path.join(root_path, f"../results_{config_name}_{timestamp}.csv")
     df_file_store_summary = os.path.join(
-        root_path, f"../results_{config_name}_summary.csv"
+        root_path, f"../results_{config_name}_{timestamp}_summary.csv"
     )
 
     # Get dataloader
@@ -324,7 +344,7 @@ def main() -> None:
     # Save predictions
     if cfg.get("save_predictions", False):
         save_predictions(
-            root_path,
+            os.path.join(root_path, timestamp),
             predictions,
             pseudo_linker_length=cfg.dataset.get("pseudo_linker_length", 0)
         )
