@@ -6,6 +6,8 @@ from lightning.pytorch.callbacks import Callback
 # from pytorch_lightning.utilities.rank_zero import rank_zero_only  # Do not use here, breaks clsuter
 from loguru import logger
 
+from openfold.np import residue_constants as rc
+
 
 def log_metrics(pl_module, metrics):
     for m in metrics:
@@ -81,6 +83,30 @@ class GradAndWeightAnalysisCallback(Callback):
             params = torch.nn.utils.parameters_to_vector(pl_module.parameters()).abs()
             return params.sum() / params.numel(), params.max()
 
+    def _get_struct_head_row_norms(self, pl_module):
+        """Mean row norm of the protein and nucleic-acid blocks of the struct head.
+
+        The whole-model aggregates above cannot separate the appended nucleic-acid
+        rows from the protein ones, so an init-scale defect in the new block stays
+        invisible there. Returns {} for protein-only builds.
+        """
+        if "P" not in rc.atom_order:
+            return {}
+        lo, hi = rc.atom_order["P"] * 3, rc.atom_type_num * 3
+        with torch.no_grad():
+            for name, param in pl_module.named_parameters():
+                if not name.endswith("decoder.struct_linear.1.weight"):
+                    continue
+                if param.ndim != 2 or param.shape[0] != hi:
+                    return {}
+                prot = param[:lo].norm(dim=1).mean()
+                na = param[lo:hi].norm(dim=1).mean()
+                metrics = {"prot_head_row_norm": prot, "na_head_row_norm": na}
+                if prot > 0:
+                    metrics["na_over_prot_head_norm"] = na / prot
+                return metrics
+        return {}
+
     def on_before_optimizer_step(self, trainer, pl_module, optimizer):
         """Before updating log max and average weight."""
         avg_w, max_w = self._get_avg_and_max_w(pl_module)
@@ -92,6 +118,7 @@ class GradAndWeightAnalysisCallback(Callback):
         metrics["max_w_bef_step"] = max_w
         metrics["avg_g_bef_step"] = avg_g
         metrics["max_g_bef_step"] = max_g
+        metrics.update(self._get_struct_head_row_norms(pl_module))
 
         # Add gradient metrics
         if len(self.max_grad_history) > 1:
