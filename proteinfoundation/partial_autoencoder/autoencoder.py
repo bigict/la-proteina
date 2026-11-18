@@ -17,6 +17,10 @@ from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer
 from proteinfoundation.partial_autoencoder.decoder_ff import DecoderFFLocal
 from proteinfoundation.partial_autoencoder.encoder import EncoderTransformer
 from proteinfoundation.utils.coors_utils import nm_to_ang
+from proteinfoundation.utils.geometry_restraints import (
+    GeometryRestraintTable,
+    compute_geom_restraint_loss,
+)
 from proteinfoundation.utils.loss_utils import token_level_w
 from proteinfoundation.utils.optim_utils import get_scheduler
 from proteinfoundation.utils.pdb_utils import write_prot_to_pdb
@@ -56,6 +60,11 @@ class AutoEncoder(L.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.cfg_ae = cfg_ae
+
+        # Geometry restraint table is loaded on first use, so a run without
+        # loss.geom.table never needs the .npz to exist.
+        self._geom_table = None
+        self._geom_table_loaded = False
 
         self.store_dir = store_dir if store_dir is not None else "./tmp_ae"
         self.val_path_tmp = os.path.join(self.store_dir, "val_stuff")
@@ -310,6 +319,26 @@ class AutoEncoder(L.LightningModule):
                 self.compute_struct_violation_loss(output_dec=output_dec, batch=batch)
             )
 
+        # Torsion-independent distance restraints. Inert unless loss.geom.table
+        # is configured; weight 0 still logs the diagnostics so the term can be
+        # monitored before it is enabled.
+        geom_cfg = self.cfg_ae.loss.get("geom", {})
+        if geom_cfg.get("table"):
+            table = self._get_geom_table()
+            coors_pred = output_dec["coors_nm"]
+            losses.update(
+                compute_geom_restraint_loss(
+                    coors_nm=coors_pred,
+                    residue_type=batch["residue_type"],
+                    coord_mask=batch["coord_mask"],
+                    residue_mask=output_dec["residue_mask"],
+                    table=table.to(coors_pred.device),
+                    weight=geom_cfg.get("weight", 0.0),
+                    chir_weight=geom_cfg.get("chir_weight", 0.0),
+                    na_only=geom_cfg.get("na_only", True),
+                )
+            )
+
         # Sequence loss
         losses.update(
             self.compute_seq_rec_loss(
@@ -336,11 +365,13 @@ class AutoEncoder(L.LightningModule):
         )
 
         if not val_step:  # Don't log these for val step
-            # Log Kl statistics
+            # Log Kl statistics. Unweighted on purpose: the `> 0.1` activity
+            # threshold below must mean the same raw nats for every residue type,
+            # or DNA/RNA get judged active at a 6-8x lower bar than protein.
             componentwise_kl = self._per_component_kl(
                 mean=output_enc["mean"],
                 log_scale=output_enc["log_scale"],
-                mask=mask * token_level_w(aatype, self.cfg_ae.loss.kl),
+                mask=mask,
             )  # [b, n, d]
             self.log_tensor_statistics(
                 bs=bs,
@@ -452,6 +483,23 @@ class AutoEncoder(L.LightningModule):
         losses["struct_lddt"] = err * weight
         losses["struct_lddt_justlog"] = err
         return losses
+
+    def _get_geom_table(self):
+        """Load the distance-restraint table once, on first use.
+
+        Returns None when loss.geom.table is unset, which keeps the term entirely
+        inert for runs that do not configure it.
+        """
+        if not self._geom_table_loaded:
+            path = self.cfg_ae.loss.get("geom", {}).get("table")
+            self._geom_table = GeometryRestraintTable(path) if path else None
+            self._geom_table_loaded = True
+            if self._geom_table is not None:
+                logger.info(
+                    f"Geometry restraints: {self._geom_table.n_restrained} pairs, "
+                    f"{self._geom_table.n_pairs} distinct atom pairs, from {path}"
+                )
+        return self._geom_table
 
     def compute_struct_violation_loss(
         self,
@@ -735,6 +783,8 @@ class AutoEncoder(L.LightningModule):
         """
         Computes KL penalty on the latent Gaussian distribution, per residue.
 
+        `mask` may carry per-token weights; they are applied to the KL directly.
+
         Returns KL, per residue (masked) and latent dimension, shape [b n d].
         """
         scale = torch.exp(log_scale)  # [b, n, 3]
@@ -751,6 +801,10 @@ class AutoEncoder(L.LightningModule):
     ) -> Dict[str, Float[Tensor, "b"]]:
         """
         Computes KL penalty on the latent Gaussian distribution.
+
+        `mask` is expected to already carry the per-token weights (see
+        token_level_w), so it normalizes by the total weight rather than by the
+        token count -- the same convention compute_struct_lddt_loss uses.
         """
         nres = torch.sum(mask, dim=-1)  # [b]
         kl_div = self._per_component_kl(

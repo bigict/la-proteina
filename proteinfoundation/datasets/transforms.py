@@ -11,7 +11,11 @@ from openfold.utils import rigid_utils
 from openfold.utils.feats import atom_gather, pseudo_residue_type
 from proteinfoundation.utils.align_utils import mean_w_mask
 from proteinfoundation.utils.constants import SIDECHAIN_TIP_ATOMS
-from proteinfoundation.utils.coors_utils import ang_to_nm, sample_uniform_rotation
+from proteinfoundation.utils.coors_utils import (
+    ang_to_nm,
+    canonicalize_phosphate_oxygens,
+    sample_uniform_rotation,
+)
 
 
 class CopyCoordinatesTransform(T.BaseTransform):
@@ -286,6 +290,29 @@ class GlobalTranslationTransform(T.BaseTransform):
             f"gaussian_mean={self.normal_mean}, gaussian_std={self.normal_std}, "
             f"uniform_min={self.uniform_min}, uniform_max={self.uniform_max})"
         )
+
+
+class CanonicalizePhosphateOxygensTransform(T.BaseTransform):
+    """Relabels OP1/OP2 deterministically so nucleic-acid features are well defined.
+
+    OP1/OP2 naming in PDB entries is arbitrary, so place this before any
+    transform that derives coordinates from `graph.coords` (notably
+    CoordsToNanometers) to guarantee every downstream feature sees one labeling.
+
+    The signed-volume chirality restraint depends on this convention: its
+    reference table is built with the same rule applied, so dropping this
+    transform would leave the table and the training targets disagreeing on the
+    0.47% of residues whose depositor labelling is the minority one.
+    """
+
+    def __call__(self, graph: Data) -> Data:
+        if "OP1" not in residue_constants.atom_order:
+            return graph
+        mask = graph.coord_mask.bool()
+        graph.coords = canonicalize_phosphate_oxygens(graph.coords, mask)
+        if "coords_nm" in graph:
+            graph.coords_nm = canonicalize_phosphate_oxygens(graph.coords_nm, mask)
+        return graph
 
 
 class CoordsToNanometers(T.BaseTransform):
